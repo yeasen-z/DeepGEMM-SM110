@@ -211,6 +211,13 @@ against one cannot be imported under the other, which is why:
 Python and torch versions it will build against, and fails early if that
 interpreter cannot import torch.
 
+The wheel version is `0.2.3+sm110` (`sgl_deep_gemm/VERSION`), a PEP 440 local
+version. It sorts above the upstream `0.2.3` and still satisfies SGLang's pin
+`sgl-deep-gemm==0.2.3`, because `==` ignores the local segment. That matters for
+installation: pip treats a wheel at the *same* version as the installed one as a
+no-op ("already installed with the same version… Use `--force-reinstall`"), so a
+wheel left at `0.2.3` would silently fail to replace an existing DeepGEMM.
+
 > **Host compile vs. runtime JIT — two separate header lookups.** The runtime
 > JIT emits `#include <deep_gemm/impls/...>` and compiles it with
 > `--include-path <package>/include`. 55 files under

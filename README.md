@@ -240,38 +240,31 @@ bash build_sgl_deep_gemm.sh
 pip install --no-deps dist/sgl_deep_gemm-*.whl   # use the actual name it prints
 ```
 
-#### Distributing the patch: read this before `pip install`
+#### Distributing the patch: the wheel version is `0.2.3+sm110`
 
-The wheel's version comes from `sgl_deep_gemm/VERSION`, which is **`0.2.3`** —
-the same public version as the upstream wheel it is patched from. That matters,
-because pip keys installation on the version:
+The wheel's version comes from `sgl_deep_gemm/VERSION`, which this fork sets to
+**`0.2.3+sm110`** — PEP 440 local version, so it stays comparable to the upstream
+`0.2.3` it is patched from while being distinguishable from it. This is not
+cosmetic; pip keys installation on the version:
 
-| Installed | Wheel you install | What pip actually does |
+| Installed | Wheel you install | What pip does |
 |---|---|---|
-| `0.2.3` | `0.2.3` (upstream version) | **Silently does nothing** — "already installed with the same version as the provided wheel. Use `--force-reinstall`…" |
-| `0.2.3` | `0.2.3+sm110` (local version) | Installs normally; **no** `--force-reinstall` needed |
+| `0.2.3` | `0.2.3` (stock version) | **Silently does nothing** — "already installed with the same version as the provided wheel. Use `--force-reinstall`…" |
+| `0.2.3` | `0.2.3+sm110` (**this fork**) | Installs normally; **no** `--force-reinstall` needed |
 
-Verified with `pip install --dry-run` on this image. So if you hand someone a
-wheel built at the stock `0.2.3`, a plain `pip install` will **not** replace their
-existing DeepGEMM and they will keep running the unpatched `_C.so`. Three ways to
-avoid that, cleanest first:
+The first row is the trap: a wheel built at the stock `0.2.3` does **not**
+replace an existing DeepGEMM, so the user keeps running the unpatched `_C.so`
+while believing the install succeeded. The checked-in `0.2.3+sm110` avoids it.
 
-1. **Give the fork its own local version** (recommended). Set
-   `sgl_deep_gemm/VERSION` to `0.2.3+sm110` before building:
+`0.2.3+sm110` also still satisfies SGLang's pin `sgl-deep-gemm==0.2.3`, because
+`==` ignores the local segment — so dependency resolution is unaffected, and it
+sorts **above** `0.2.3` as expected. The resulting wheel is
+`sgl_deep_gemm-0.2.3+sm110-py3-none-any.whl` (the `+` is kept literally in the
+filename).
 
-   ```bash
-   echo '0.2.3+sm110' > sgl_deep_gemm/VERSION
-   bash build_sgl_deep_gemm.sh
-   pip install --no-deps dist/sgl_deep_gemm-0.2.3+sm110-*.whl
-   ```
+If you rebuild at a different version, the remaining options are:
 
-   This stays PEP 440-compliant, sorts **above** `0.2.3`, and — importantly —
-   still satisfies SGLang's pin `sgl-deep-gemm==0.2.3`: a local version segment
-   is ignored by `==` matching, so dependency resolution is unaffected. The
-   resulting wheel is `sgl_deep_gemm-0.2.3+sm110-py3-none-any.whl` (the `+` is
-   kept literally in the filename; verified by an actual `python -m build`).
-
-2. **Force the reinstall** if you keep the version at `0.2.3`:
+1. **Force the reinstall** if you deliberately build with the stock `0.2.3`:
 
    ```bash
    pip install --force-reinstall --no-deps dist/sgl_deep_gemm-*.whl
@@ -284,14 +277,13 @@ avoid that, cleanest first:
    pip resolving or upgrading anything you did not ask for. (It does **not**
    protect you against re-downloading torch — that is not a dependency here.)
 
-3. **Skip the wheel entirely** — overwrite the extension by hand. Fewest moving
+2. **Skip the wheel entirely** — overwrite the extension by hand. Fewest moving
    parts for a single machine, and it cannot disturb pip's metadata at all:
 
    ```bash
    SP=$(python -c 'import deep_gemm,os;print(os.path.dirname(deep_gemm.__file__))')
    cp "$SP/_C.so" "$SP/_C.so.orig"     # keep the stock one for A/B
    cp /path/to/built/_C.so "$SP/_C.so"
-   md5sum "$SP/_C.so"                  # ours was 66e8ee99..., but see the note below
    ```
 
    Note this replaces the binary only; if you also need the Python-side changes
