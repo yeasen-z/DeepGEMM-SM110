@@ -367,7 +367,7 @@ static void fp8_fp4_mega_moe(
     const bool use_fp8_combine = deep_jit::get_env<int>("DG_USE_FP8_COMBINE") != 0;
 
     // Dispatch into different architectures
-    if (arch_major == 10) {
+    if (arch_major == 10 or arch_major == 11) {
         sm100_fp8_fp4_mega_moe(y,
                                l1_acts, l1_acts_sf,
                                l2_acts, l2_acts_sf,
@@ -511,7 +511,7 @@ static void bf16_mega_moe(
                 l1_acts, _l1_acts_sf, l2_acts, _l2_acts_sf, _x_scales] = slice(sym_buffer);
 
     // Dispatch into different architectures
-    if (arch_major == 10) {
+    if (arch_major == 10 or arch_major == 11) {
         sm100_bf16_mega_moe(y,
                             l1_acts, l2_acts,
                             shared_l1_acts, shared_l2_acts,

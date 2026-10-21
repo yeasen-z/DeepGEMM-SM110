@@ -220,7 +220,7 @@ static void mega_mhc(const torch::Tensor& x,
         DG_HOST_ASSERT(num_required_bytes <= y_shared_sf->storage().nbytes());
     }
 
-    DG_HOST_ASSERT(jit->device.get_arch_major() == 10);
+    DG_HOST_ASSERT((jit->device.get_arch_major() == 10 or jit->device.get_arch_major() == 11));
     const auto num_sms = runtime->get_num_sms();
     const auto num_m_blocks = mhc_layout::Workspace<>::get_num_m_blocks(static_cast<uint32_t>(num_tokens));
     const auto num_splits = get_num_splits(num_m_blocks, static_cast<uint32_t>(hidden), static_cast<uint32_t>(num_sms));

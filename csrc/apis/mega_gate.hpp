@@ -174,7 +174,7 @@ bf16_mega_gate(const torch::Tensor& x,
     DG_HOST_ASSERT(num_tokens <= static_cast<int>(layout::mega_gate::kNumMaxTokens));
 
     const auto arch_major = jit->device.get_arch_major();
-    DG_HOST_ASSERT(arch_major == 10);
+    DG_HOST_ASSERT(arch_major == 10 or arch_major == 11);
     const auto config = get_sm100_bf16_mega_gate_config(num_tokens, hidden, num_routed_experts,
                                                         runtime->get_num_sms(), bias.has_value(),
                                                         image_token_mask.has_value(), to_physical_map.has_value());

@@ -63,7 +63,7 @@ public:
         if (arch_major == 12)
             return {128, 32, 32};
         // SM100: 224 down to 32 by 32 (sgl tuning)
-        if (arch_major == 10)
+        if (arch_major == 10 or arch_major == 11)
             return {224, 32, 32};
         // SM90 and others: fixed legacy alignment, no shrinking
         return {kLegacyMKAlignmentForContiguousLayout, kLegacyMKAlignmentForContiguousLayout, 1};
