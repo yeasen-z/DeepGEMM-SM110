@@ -8,9 +8,10 @@ and test it, and what the recorded verification results were.
 - Target: **NVIDIA Jetson AGX Thor Developer Kit**, `sm_110` / compute capability **11.0**
 - Status: the dispatch path works and has been exercised **end to end** — SGLang
   serving `Qwen3-8B-FP8` on Thor with the DeepGEMM FP8 backend produces correct
-  generation, and every DeepGEMM test case that has been run passed with zero
-  assertion failures. The full test suite has **not** been run end to end on this
-  part; per-section coverage is in [§5.1](#51-numerical-correctness). SGLang
+  generation, and a steady-state prefill measurement puts DeepGEMM **1.47x** faster
+  than the Triton backend. Every DeepGEMM test case that has been run passed with
+  zero assertion failures. The full test suite has **not** been run end to end on
+  this part; per-section coverage is in [§5.1](#51-numerical-correctness). SGLang
   integration has one extra prerequisite
   (see [§6](#6-sglang-integration-prerequisite)).
 
@@ -126,8 +127,9 @@ prenorm, Mega Gate, Mega mHC, and Mega MoE.
 ## 3. Build
 
 `_C.so` is the only compiled artifact; it is a plain `TORCH_LIBRARY` shared
-object with no CPython dependency (one build serves every Python version, though
-it is linked against one PyTorch build).
+object with no CPython dependency, so one build serves every **Python** version.
+It is **not** portable across torch releases or CPU architectures, though — see
+§3.2 — and this repository deliberately ships no prebuilt copy.
 
 ```bash
 # CUTLASS/DeepJIT submodules (host compile needs cutlass; JIT needs deep_jit)
@@ -135,6 +137,9 @@ git submodule update --init --recursive
 
 python sgl_deep_gemm/build_ext.py . /path/to/site-packages/deep_gemm/_C.so
 ```
+
+Build with the interpreter of the environment you will install into. The
+`python` on your `PATH` is not necessarily that one.
 
 `build_ext.py` shells out to `${CXX:-c++}` with `-std=c++20`; the compiler must
 support C++20 `<format>`. It compiles **only the host layer**
@@ -148,19 +153,6 @@ cp _C.so /path/to/site-packages/deep_gemm/_C.so
 
 Alternatively `bash build_sgl_deep_gemm.sh` produces a wheel whose import name
 is still `deep_gemm`.
-
-> **Host compile vs. runtime JIT — two separate header lookups.** The runtime
-> JIT emits `#include <deep_gemm/impls/...>` and compiles it with
-> `--include-path <package>/include`. 55 files under
-> `deep_gemm/include/deep_gemm/` include `<cutlass/...>` or `<cute/...>`, so the
-> **package's** `include/cutlass` and `include/cute` must exist when a kernel is
-> compiled at run time. The wheel build copies them in; a source-tree run
-> (`PYTHONPATH=$PWD`) needs the two symlinks created by hand:
->
-> ```bash
-> ln -sfn "$PWD/third-party/cutlass/include/cutlass" deep_gemm/include/cutlass
-> ln -sfn "$PWD/third-party/cutlass/include/cute"    deep_gemm/include/cute
-> ```
 
 ### 3.1 Build/test environment used for the recorded results
 
@@ -176,8 +168,15 @@ is still `deep_gemm`.
 | PyTorch | `2.14.1+cu130` |
 | Python env | conda env `inscope`, Python 3.12 |
 | DeepGEMM base | `v0.2.3` (`e6f9bd6`) |
-| Patched `_C.so` md5 | `66e8ee99e3c3ae7425b42713766a6e4a` |
+| Patched `_C.so` md5 | `66e8ee99e3c3ae7425b42713766a6e4a` (this build only — see below) |
 | Stock `_C.so` md5 | `ab82a63b329f5366c04ec1a0244402a9` |
+
+> **The md5s identify these particular builds, not the patch.** `_C.so` embeds
+> the absolute path of the sources it was compiled from, so the same sources
+> built in a different directory give a different hash: a fresh clone built from
+> `/tmp/sm110_fresh` produced `515dea727c68e77b6b247d88188b3aff` from a binary of
+> identical size (2,045,576 bytes). A library you build yourself will not match
+> the values above; compare behaviour instead (§5.3).
 
 The JIT compiles at run time with `--gpu-architecture=sm_110f`, which is what
 DeepJIT derives from major/minor 11/0.
@@ -186,6 +185,44 @@ DeepJIT derives from major/minor 11/0.
 > wheels, so it does **not** contain `cuobjdump`. DeepJIT only requires it when
 > SASS dumping is on (`JIT_DEBUG`/`JIT_DUMP_ASM`); all recorded runs left it off
 > and only ever exercised the cubin + PTX path.
+
+### 3.2 Why `_C.so` is not portable (and why none is committed here)
+
+A `_C.so` is only valid for a specific **(CPU architecture, torch ABI, CUDA
+major)** combination. The recorded build is aarch64 + torch 2.14.1 + CUDA 13:
+
+| Dimension | This build | What breaks otherwise |
+|---|---|---|
+| CPU architecture | `ARM aarch64` | will not load on x86_64 |
+| torch ABI | torch **2.14.1**: `c10_cuda_check_implementation` takes a `CUDAErrorLogCapture*` | under torch ≤ 2.13, `import deep_gemm` raises `undefined symbol: _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_jb` |
+| CUDA major | `libcudart.so.13`, `libcublas.so.13` | missing shared libraries under CUDA 12 |
+
+The torch split was observed directly on the development machine: `inscope`
+(torch 2.14.1) defines the signature **with** the extra argument, while
+`prefillbench-thor` (torch 2.13.0) defines it **without**. A `_C.so` compiled
+against one cannot be imported under the other, which is why:
+
+* building it yourself is the supported path (the runtime JIT already needs a
+  CUDA toolchain, so this adds no new requirement), and
+* an md5 comparison against our binary is meaningless — see the note above.
+
+`build_sgl_deep_gemm.sh` therefore selects its interpreter explicitly
+(`PYTHON_EXE="${PYTHON_EXE:-$(which python3 || which python)}"`), prints the
+Python and torch versions it will build against, and fails early if that
+interpreter cannot import torch.
+
+> **Host compile vs. runtime JIT — two separate header lookups.** The runtime
+> JIT emits `#include <deep_gemm/impls/...>` and compiles it with
+> `--include-path <package>/include`. 55 files under
+> `deep_gemm/include/deep_gemm/` include `<cutlass/...>` or `<cute/...>`, so the
+> **package's** `include/cutlass` and `include/cute` must exist when a kernel is
+> compiled at run time. The wheel build copies them in; a source-tree run
+> (`PYTHONPATH=$PWD`) needs the two symlinks created by hand:
+>
+> ```bash
+> ln -sfn "$PWD/third-party/cutlass/include/cutlass" deep_gemm/include/cutlass
+> ln -sfn "$PWD/third-party/cutlass/include/cute"    deep_gemm/include/cute
+> ```
 
 ---
 
@@ -266,7 +303,7 @@ backend as a control. Both runs use the patched `_C.so` and
 Setup: `Qwen3-8B-FP8` (offline snapshot), `dtype=bfloat16`, single device, greedy
 decoding, four fixed prompts. `--fp8-gemm-backend` selects the backend.
 
-| Backend | First prompt completion | Wall |
+| Backend | First prompt completion | Wall (first run, cold) |
 |---|---|---:|
 | **`deep_gemm`** | `' Paris. The capital of Germany is Berlin. The capital of Italy is Rome.'` | 506 s |
 | `triton` (control) | `' Paris. The capital of Italy is Rome. The capital of Germany is Berlin.'` | 311 s |
@@ -285,8 +322,13 @@ equivalent to the Triton control:
 rounding of Jupiter's diameter differ, `142,000` vs `142,796` km.) This exercises
 the path SGLang actually uses in production — FP8 block-scaled GEMM for every
 linear, including the requantized UE8M0 weight scales — and produces correct
-text, which is a far stronger signal than any single-kernel spot check. Wall time
-is higher than Triton on this 20-SM part; see §5.5.
+text, which is a far stronger signal than any single-kernel spot check.
+
+> **The 506 s / 311 s figures above are cold-start numbers, not a performance
+> result.** Both runs include model load plus one-off JIT compile/warm-up, and the
+> DeepGEMM run had to JIT-compile every shape it touched for the first time. A
+> later steady-state measurement — see [§5.6](#56-steady-state-throughput) —
+> shows DeepGEMM is substantially **faster** than Triton on this part.
 
 Note this was run with the model's own scales requantized to UE8M0, i.e. the
 configuration described in §6 — that is the intended deployment shape.
@@ -335,19 +377,55 @@ no bad output is produced.
 
 ### 5.5 Performance
 
-Relative to cuBLAS on the same Thor part, per-shape ratios from the suite were
-roughly at parity for large-N shapes and below parity for some small/skinny
-ones (e.g. `1.04x`, `1.02x`, `0.98x` on the measured BF16 NT shapes). SM110 is
-a 20-SM mobile-class part, so absolute TFLOPS are low and these numbers should
-be read as "the SM100 kernel family runs correctly here", not as a tuned
-performance claim. No SM110-specific tuning was added.
+**Per-shape ratios from the kernel suite.** Relative to cuBLAS on the same Thor
+part, per-shape ratios from the suite were roughly at parity for large-N shapes
+and below parity for some small/skinny ones (e.g. `1.04x`, `1.02x`, `0.98x` on
+the measured BF16 NT shapes). SM110 is a 20-SM mobile-class part, so absolute
+TFLOPS are low and these numbers should be read as "the SM100 kernel family runs
+correctly here". No SM110-specific tuning was added.
 
-End-to-end, the `Qwen3-8B-FP8` run took **506 s** with DeepGEMM vs **311 s**
-with Triton (same four prompts, both including model load and JIT/compile
-warm-up). That gap is not a fair steady-state comparison — the DeepGEMM run pays
-a one-off JIT compile for the shapes it hits and was not pre-compiled with
-`sglang.compile_deep_gemm`. Treat the number as "it runs correctly", not as a
-perf verdict; correctness was the goal of this work.
+**Steady state end to end.** See §5.6 for the throughput measurement, which is
+the meaningful end-to-end performance result.
+
+### 5.6 Steady-state throughput
+
+The 506 s / 311 s figures in §5.2 are cold-start and must not be used to compare
+the backends. A separate steady-state measurement was therefore run, with both
+backends measured on the **same real request sample** after warm-up.
+
+> **Scope.** Real data from the PrefillBench-thor corpus (`wildchat` +
+> `swe_rebench`), 41 requests, **1,440,227 tokens**, run through SGLang's official
+> `sglang.benchmark.one_batch` path (one `ModelRunner.extend()` per request,
+> timings bracketed by `torch.cuda.synchronize()`; 3 warm-up passes; no server,
+> no chunked prefill). Prefill runs decoder blocks 0..23 and stops, so this
+> measures the **prefill stage of a 24-of-36-layer model** — the absolute tok/s
+> are therefore not whole-model prefill throughput, but the *ratio* between
+> backends is valid because both were measured under identical truncation.
+> Same 41 requests, same order, same token counts for both backends.
+
+| Group | DeepGEMM | Triton | Ratio |
+|---|---:|---:|---:|
+| All | **5,331 tok/s** | 3,639 tok/s | **1.47x** |
+| Short (~4k) | **12,018 tok/s** | 5,428 tok/s | **2.21x** |
+| Long (~64k) | **5,165 tok/s** | 3,571 tok/s | **1.45x** |
+
+Latency p50 (lower is better):
+
+| Group | DeepGEMM | Triton | Ratio |
+|---|---:|---:|---:|
+| All | **10.49 s** | 15.90 s | 1.52x |
+| Short (~4k) | **0.322 s** | 0.729 s | 2.26x |
+| Long (~64k) | **12.13 s** | 17.65 s | 1.45x |
+
+Total wall: DeepGEMM **270.3 s** vs Triton **396.0 s** for the identical
+1,440,227-token workload. A single layer-level GEMM spot check on real checkpoint
+weights (`gate_proj`, N=12288 K=4096) agrees in direction: 3.15–3.48x at
+M ≥ 1024, though only 1.43x at M=256 and ~1.0x at M=16/64, where neither backend
+is GEMM-bound.
+
+**Read this as a prefill-only comparison on one part.** Decode was not measured
+here, only 24 of 36 layers were executed, the sample is 41 of 20,000 available
+requests, and both backends were measured sequentially rather than interleaved.
 
 ---
 
@@ -422,7 +500,9 @@ SGLang edits, with `SGLANG_ENABLE_JIT_DEEPGEMM=1`.
 - `Qwen3-8B-FP8` end-to-end generation succeeded (§5.2), but that is a **dense**
   model: it exercises the dense block-FP8 GEMM path only. Grouped / MoE
   inference (and `DeepSeek-V3`-class models) was not run against this revision.
-- The end-to-end run was not pre-compiled with `sglang.compile_deep_gemm`, so its
-  wall time includes one-off JIT compilation and is not a performance result.
+- The end-to-end **cold-start** run in §5.2 was not pre-compiled with
+  `sglang.compile_deep_gemm`, so its wall time (506 s) includes one-off JIT
+  compilation and is not a performance result. The steady-state measurement in
+  §5.6 is the performance result, and it is prefill-only (24 of 36 layers).
 - If upstream adopts this, folding SM110 into an `is_sm100_family`-style
   predicate would be cleaner than enumerating `10 or 11` at 45 sites.

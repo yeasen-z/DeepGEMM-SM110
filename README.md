@@ -5,7 +5,7 @@ record of exactly how far that support has been verified.
 
 - **Base**: `sgl-project/DeepGEMM` **v0.2.3** (`e6f9bd6`)
 - **Target**: NVIDIA Jetson AGX Thor Developer Kit — `sm_110`, compute capability **11.0**
-- **Patched artifact**: `deep_gemm/_C.so`, md5 `66e8ee99e3c3ae7425b42713766a6e4a`
+- **Patched artifact**: `deep_gemm/_C.so` — this fork changes **host code only**, and `_C.so` embeds its build-time source path, so its md5 identifies *one particular build* (ours: `66e8ee99…`), not the patch. Verify your own build behaviourally, with §4.5.
 - **Full write-up**: [docs/sm110-thor-support.md](docs/sm110-thor-support.md)
 - **Upstream README** (this fork replaced it, kept for reference): [README.upstream.md](README.upstream.md)
 
@@ -84,6 +84,7 @@ failures, zero tracebacks**):
 | JIT `fp8_gemm_nt` vs dequantized ref | — | — | **Verified**, `rel_L2 = 1.65e-3` |
 | SGLang real layer path, block-FP8, `M=N=K=4096` | — | — | **Verified**, `rel_L2 = 1.66e-3` |
 | Stock build fails loudly, not silently | — | — | **Verified** (`Unsupported architecture`) |
+| **Steady-state throughput vs Triton** (prefill, real data) | 41 req / 1.44 M tok | — | **Verified** — **1.47x** overall, 2.21x on ~4k requests |
 
 The end-to-end row is the strongest evidence here: it drives every linear in the
 model through DeepGEMM's block-scaled FP8 kernel, including UE8M0-requantized
@@ -161,35 +162,153 @@ git submodule update --init --recursive
 Both submodules are mandatory: `third-party/cutlass` supplies the CuTe UMMA
 headers, and `third-party/deep_jit` supplies the JIT runtime headers.
 
-### 4.3 Point the build at your CUDA install
+### 4.3 Point the build at your environment
 
-The build reads `CUDA_HOME` / `CUDA_PATH` and falls back to
-`dirname(dirname(which nvcc))`:
+Two things must be right before you build: the CUDA install, and — more
+importantly — **which Python builds the extension**.
 
 ```bash
 export CUDA_HOME=/usr/local/cuda          # or e.g. /home/<user>/cuda_home_thor
 export CUDA_PATH="$CUDA_HOME"
 export CUDACXX="$CUDA_HOME/bin/nvcc"
-export PATH="$CUDA_HOME/bin:$PATH"
 export CXX=g++                            # a real C++20 g++, not nvcc
 
 nvcc --version && $CXX --version          # sanity check
 ```
+
+> #### Build with the Python you are going to install into
+>
+> `_C.so` is linked against torch's C++ ABI, and that ABI is **not** stable
+> across torch releases: `c10::cuda::c10_cuda_check_implementation` gained a
+> `CUDAErrorLogCapture*` parameter in torch 2.14. A `_C.so` built against 2.14
+> fails to import under 2.13 with
+> `undefined symbol: _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_jb`,
+> and vice versa.
+>
+> `build_sgl_deep_gemm.sh` picks its interpreter with
+> `PYTHON_EXE="${PYTHON_EXE:-$(which python3 || which python)}"`. If your `PATH`
+> has more than one Python — very common when you also export `$CUDA_HOME/bin`,
+> which often contains its own `python3` — the *wrong* one can be chosen and the
+> resulting wheel is silently unusable in your target environment. Select it
+> explicitly:
+>
+> ```bash
+> which -a python3                                     # ALL of them, in PATH order
+> export PYTHON_EXE=/path/to/your/env/bin/python       # pin the one you mean
+>
+> # Or simply put your env first and confirm what wins:
+> export PATH="/path/to/your/env/bin:$PATH"
+> which python3
+> python3 -c 'import torch,sys; print(sys.version.split()[0], torch.__version__, torch.version.cuda)'
+> ```
+>
+> The build script now prints the interpreter and torch version it will use, and
+> refuses to run if that interpreter cannot import torch. Set
+> `DG_SKIP_TORCH_CHECK=1` to silence the extra ABI probe.
 
 ### 4.4 Build and install
 
 `_C.so` is the only compiled artifact — a plain `TORCH_LIBRARY` shared object
 with no CPython dependency. **Two supported routes:**
 
-**Route A — build a wheel (recommended).** `build_sgl_deep_gemm.sh` initialises
-the submodules, links the CUTLASS headers into `deep_gemm/include`, stages the
+> #### This repository ships no prebuilt `_C.so`, on purpose
+>
+> Build it yourself. A `_C.so` is only valid for an exact
+> **(CPU architecture, torch ABI, CUDA major)** triple, so a binary we upload
+> would be unusable for most readers:
+>
+> | Dimension | Our build | Consequence for someone else |
+> |---|---|---|
+> | CPU arch | `ARM aarch64` (Thor) | will not load on x86_64 at all |
+> | torch ABI | `torch 2.14.1` (`c10_cuda_check_implementation` **with** `CUDAErrorLogCapture*`) | `undefined symbol` under torch ≤ 2.13 |
+> | CUDA major | `libcudart.so.13` / `libcublas.so.13` | missing libraries under CUDA 12 |
+>
+> Both halves of that torch-ABI split are present on the development machine
+> itself (`inscope` → 2.14.1, `prefillbench-thor` → 2.13.0), which is exactly
+> why this is easy to get wrong. Since the runtime JIT already requires a CUDA
+> toolchain on the target machine, building the host layer adds no new
+> requirement. Building also avoids the checksum trap described below: a
+> self-built `_C.so` legitimately has a different md5 from ours.
+
+**Route A — build a wheel.** `build_sgl_deep_gemm.sh` initialises the
+submodules, links the CUTLASS headers into `deep_gemm/include`, stages the
 package, compiles `_C.so`, and produces a wheel whose import name is still
 `deep_gemm`:
 
 ```bash
 bash build_sgl_deep_gemm.sh
-pip install dist/sgl_deep_gemm-*.whl      # use the actual name it prints
+pip install --no-deps dist/sgl_deep_gemm-*.whl   # use the actual name it prints
 ```
+
+#### Distributing the patch: read this before `pip install`
+
+The wheel's version comes from `sgl_deep_gemm/VERSION`, which is **`0.2.3`** —
+the same public version as the upstream wheel it is patched from. That matters,
+because pip keys installation on the version:
+
+| Installed | Wheel you install | What pip actually does |
+|---|---|---|
+| `0.2.3` | `0.2.3` (upstream version) | **Silently does nothing** — "already installed with the same version as the provided wheel. Use `--force-reinstall`…" |
+| `0.2.3` | `0.2.3+sm110` (local version) | Installs normally; **no** `--force-reinstall` needed |
+
+Verified with `pip install --dry-run` on this image. So if you hand someone a
+wheel built at the stock `0.2.3`, a plain `pip install` will **not** replace their
+existing DeepGEMM and they will keep running the unpatched `_C.so`. Three ways to
+avoid that, cleanest first:
+
+1. **Give the fork its own local version** (recommended). Set
+   `sgl_deep_gemm/VERSION` to `0.2.3+sm110` before building:
+
+   ```bash
+   echo '0.2.3+sm110' > sgl_deep_gemm/VERSION
+   bash build_sgl_deep_gemm.sh
+   pip install --no-deps dist/sgl_deep_gemm-0.2.3+sm110-*.whl
+   ```
+
+   This stays PEP 440-compliant, sorts **above** `0.2.3`, and — importantly —
+   still satisfies SGLang's pin `sgl-deep-gemm==0.2.3`: a local version segment
+   is ignored by `==` matching, so dependency resolution is unaffected. The
+   resulting wheel is `sgl_deep_gemm-0.2.3+sm110-py3-none-any.whl` (the `+` is
+   kept literally in the filename; verified by an actual `python -m build`).
+
+2. **Force the reinstall** if you keep the version at `0.2.3`:
+
+   ```bash
+   pip install --force-reinstall --no-deps dist/sgl_deep_gemm-*.whl
+   ```
+
+   `sgl-deep-gemm` currently declares **no** runtime dependencies
+   (`dependencies = []` in its `pyproject.toml`), so `--force-reinstall` alone
+   would be harmless today. Keep `--no-deps` anyway: it is the belt-and-braces
+   form that stays correct if the wheel later gains dependencies, and it stops
+   pip resolving or upgrading anything you did not ask for. (It does **not**
+   protect you against re-downloading torch — that is not a dependency here.)
+
+3. **Skip the wheel entirely** — overwrite the extension by hand. Fewest moving
+   parts for a single machine, and it cannot disturb pip's metadata at all:
+
+   ```bash
+   SP=$(python -c 'import deep_gemm,os;print(os.path.dirname(deep_gemm.__file__))')
+   cp "$SP/_C.so" "$SP/_C.so.orig"     # keep the stock one for A/B
+   cp /path/to/built/_C.so "$SP/_C.so"
+   md5sum "$SP/_C.so"                  # ours was 66e8ee99..., but see the note below
+   ```
+
+   Note this replaces the binary only; if you also need the Python-side changes
+   from a newer revision, this route will not bring them.
+
+> **Don't use the md5 to recognise the patch.** `_C.so` embeds the absolute path
+> of the sources it was compiled from (the assertion messages reference them, and
+> they are visible via `strings`). Two builds of byte-identical sources in
+> different directories therefore produce **different** md5s — we measured
+> 2,045,576-byte binaries that differ only in that embedded path and hash as
+> `66e8ee99…` (built in the source tree) vs `515dea72…` (built in a fresh clone).
+> A build you make yourself will not reproduce our md5, so an md5 mismatch is not
+> evidence of a bad build. Use the behavioural check in §4.5 instead: `bf16_gemm_nt`
+> must run, and the stock library must fail with `Unsupported architecture`.
+
+Whichever route you use, confirm you really got the patched build — do it
+behaviourally, as in §4.5, not by md5 (see the note above).
 
 **Route B — compile `_C.so` in place.** Faster when iterating on `csrc/`;
 you compile straight over the installed extension:
@@ -253,8 +372,15 @@ OK 51.0
 
 With the stock `_C.so` this dies with
 `RuntimeError: Assertion error (csrc/apis/gemm.hpp:225): Unsupported architecture`.
-The patched `_C.so` md5 is `66e8ee99e3c3ae7425b42713766a6e4a`; the stock one is
-`ab82a63b329f5366c04ec1a0244402a9`.
+
+That runtime difference — not a checksum — is the reliable way to tell the two
+apart. `_C.so` embeds the absolute path of the sources it was built from (the
+assertion messages point at them), so its md5 changes with the build directory:
+the binary in this environment hashes as `66e8ee99e3c3ae7425b42713766a6e4a`
+(path `/home/becool/Workspace/zmosg/src/DeepGEMM`, the stock one as
+`ab82a63b329f5366c04ec1a0244402a9`), while a byte-identical build from a fresh
+clone (`/tmp/sm110_fresh`) hashes as `515dea727c68e77b6b247d88188b3aff`. A
+self-built library will legitimately differ.
 
 ### 4.6 Run the test suites
 
@@ -313,9 +439,14 @@ coherent and semantically matched the Triton control:
 
 This drives every linear in the model through DeepGEMM's block-scaled FP8 kernel,
 including UE8M0-requantized weight scales. `Qwen3-8B-FP8` is **dense**, so this
-covers the dense FP8 path only — not the grouped / MoE paths. Full details,
-including the Triton wall-clock comparison, are in
-[docs/sm110-thor-support.md §5.2](docs/sm110-thor-support.md).
+covers the dense FP8 path only — not the grouped / MoE paths.
+
+> The wall times in that cold-start run (506 s DeepGEMM vs 311 s Triton) include
+> one-off JIT compilation and are **not** a performance comparison. A separate
+> steady-state measurement on real data — **prefill only, 24 of 36 layers, 41
+> requests / 1.44 M tokens** — puts DeepGEMM at **1.47x Triton overall** (2.21x on
+> ~4k requests). See
+> [docs/sm110-thor-support.md §5.6](docs/sm110-thor-support.md#56-steady-state-throughput).
 
 ---
 
