@@ -305,7 +305,7 @@ by removing the guard and keeping the assertions. See §5.1.1.
 
 The supported installation is `sgl-deep-gemm`, built by
 `bash build_sgl_deep_gemm.sh`; the Python import name is `deep_gemm`.
-Install the resulting wheel using the source-build instructions in README §4.
+Install the resulting wheel using the source-build instructions in README §2.
 Version `0.2.3+sm110` satisfies SGLang's `sgl-deep-gemm==0.2.3` dependency.
 
 Do not use root-level `pip install .` for SGLang. Its legacy `setup.py`
@@ -711,7 +711,13 @@ SGLang edits, with `SGLANG_ENABLE_JIT_DEEPGEMM=1`.
 - The main-sweep `_C.so` was replaced part-way through by an unrelated process,
   so `test_bf16.py` ran against one patched build and `test_fp8_fp4.py` /
   `test_layout.py` against another (same source, different embedded build path).
-  See README §2.2 for why this does not affect the conclusions.
+  This does not affect the conclusions: both were built from the same patched
+  source, all three processes ran to completion, and the later build alone passed
+  625 cases — so every exercised path was demonstrably supported by a single
+  build. It does mean this was not a controlled immutable-artifact run, and a
+  single-build rerun would be needed for strict artifact-level reproducibility.
+  `_C.so` embeds the absolute path of the sources it was built from, so two
+  builds of identical sources in different directories differ only in that path.
 - `Qwen3-8B-FP8` end-to-end generation succeeded (§5.2), but that is a **dense**
   model: it exercises the dense block-FP8 GEMM path only. Grouped / MoE
   inference (and `DeepSeek-V3`-class models) was not run against this revision.
@@ -724,21 +730,18 @@ SGLang edits, with `SGLANG_ENABLE_JIT_DEEPGEMM=1`.
 
 ---
 
-## 9. Version handling
+## 8. Version handling
 
-`sgl_deep_gemm/VERSION` (`0.2.3+sm110`) is the single source of truth. Both build
-paths read it, so one source tree reports one version:
+`sgl_deep_gemm/VERSION` (`0.2.3+sm110`) is the single source of truth for the
+version this repository reports:
 
-- `build_sgl_deep_gemm.sh` stages it into the wheel's `deep_gemm/VERSION`,
-  spelled exactly as `setup.py` does, and the staged file is the one
-  `deep_gemm.__version__` reads at runtime.
-- `setup.py`'s `get_public_version()` reads it verbatim and returns it
-  unchanged. Upstream appended a git revision or `+local`; that is dropped,
-  because `0.2.3+sm110+local` has two local segments and is not a legal PEP 440
-  version. A dirty tree is still reported as a warning.
+- `build_sgl_deep_gemm.sh` stages it into the wheel's `deep_gemm/VERSION`; the
+  staged file is what `deep_gemm.__version__` reads at runtime.
 - `deep_gemm/__init__.py`'s `_read_version()` resolves `VERSION` beside the
   module, falling back to the sibling `sgl_deep_gemm/VERSION` in a source tree,
   and to `0.0.0+unknown` if neither exists.
+- `setup.py`'s `get_public_version()` reads the same file, so the legacy
+  `pip install .` path cannot report a different number from the wheel.
 
 The value it replaces was `__version__ = '2.8.0'`, read by `setup.py` through a
 regex and `ast.literal_eval`. That `2.8.0` belonged to an internal build series,
@@ -747,7 +750,15 @@ not to the `v0.2.x` release tags: its lineage is
 `66081d4` (2026-09-10). Because it was the newest value on that axis, describing
 it as "the original DeepGEMM version" would be wrong.
 
-Verified: `python setup.py --version` and `setup.py egg_info`'s `PKG-INFO` both
-report `0.2.3+sm110`, matching the build script. The supported path is unaffected,
-since its `deep_gemm/__init__.py` is copied from `sgl_deep_gemm/__init__.py`,
-which already read `VERSION`.
+One formatting detail matters: PEP 440 permits only one local segment, and
+upstream's `setup.py` appended `+<commit>` / `+local` on top of the version, which
+on `0.2.3+sm110` would yield the invalid `0.2.3+sm110+local`. `setup.py` now
+returns the file's value verbatim and warns about a dirty tree instead of
+encoding it.
+
+This unification does **not** make `pip install .` a supported installation
+route — it still compiles upstream's obsolete entry point and is broken for
+reasons unrelated to the version (§4.1).
+
+Verified: `build_sgl_deep_gemm.sh` stamps `0.2.3+sm110`, the installed package
+reports `0.2.3+sm110`, and `importlib.metadata.version('sgl-deep-gemm')` agrees.

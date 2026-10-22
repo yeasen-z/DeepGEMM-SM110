@@ -1,769 +1,240 @@
-# DeepGEMM for SM110 (Thor)
+# DeepGEMM SM110（Jetson AGX Thor）适配
 
-Experimental **SM110 (NVIDIA Jetson AGX Thor)** support for DeepGEMM, plus a
-record of exactly how far that support has been verified.
+让 DeepGEMM 能在 **NVIDIA Jetson AGX Thor**（SM110）上跑起来，供 SGLang 使用。
 
-- **Base**: `sgl-project/DeepGEMM` **v0.2.3** (`e6f9bd6`)
-- **Target**: NVIDIA Jetson AGX Thor Developer Kit — `sm_110`, compute capability **11.0**
-- **Implementation**: the dispatch change is a single commit, [`db919b4`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/commit/db919b4) — 45 sites in 10 host headers. A later commit adds packaging, diagnostics and a capability query (§7); it does not touch dispatch.
-- **Full diff vs upstream v0.2.3**: [`e6f9bd6...main`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/compare/e6f9bd6...main)
-- **All changes in this fork**: [`1853080...main`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/compare/1853080...main)
-- **Patched artifact**: `deep_gemm/_C.so` — this fork ships **no prebuilt binary**, on purpose: `_C.so` is tied to your CPU arch, your torch C++ ABI and your CUDA major, and it embeds its build-time source path, so no single binary is portable. Build it yourself (§4.4) and verify it behaviourally (§4.5).
-- **Full write-up**: [docs/sm110-thor-support.md](docs/sm110-thor-support.md)
-- **Upstream README** (this fork replaced it, kept for reference): [README.upstream.md](README.upstream.md)
-
-> ### Build for SGLang
->
-> This fork supports the `sgl-deep-gemm` distribution, imported as `deep_gemm`.
-> Build with `bash build_sgl_deep_gemm.sh`, then install the resulting wheel
-> as described in §4.4. Its version is `0.2.3+sm110`, which satisfies
-> SGLang's dependency `sgl-deep-gemm==0.2.3`.
->
-> **Do not run `pip install .` for SGLang, and do not install the `deep_gemm`
-> distribution alongside `sgl-deep-gemm`.** They have different distribution
-> names but own the same `deep_gemm/` package directory. Pip can record both
-> as installed even when their package files have been replaced; uninstalling
-> one can remove files required by the other.
->
-> The root `setup.py` is retained from upstream and is not a supported build
-> route here. Version readers use `sgl_deep_gemm/VERSION` consistently; this
-> does not make the legacy distribution a SGLang installation route.
+- 基线：`sgl-project/DeepGEMM` **v0.2.3**
+- 目标设备：Jetson AGX Thor（`sm_110`，compute capability 11.0）
+- 详细验证记录：[docs/sm110-thor-support.md](docs/sm110-thor-support.md)
+- 上游原始 README（本 fork 替换了首页，原文保留）：[README.upstream.md](README.upstream.md)
 
 ---
 
-## 1. What was implemented
+## 1. 改了什么
 
-DeepGEMM's host layer (`csrc/`, compiled into `deep_gemm/_C.so`) chooses a kernel
-implementation purely from the device's **major** architecture number. Upstream
-v0.2.3 only compares against `9`, `10`, and `12`; Thor reports **major 11**, so
-every public API aborted before a kernel was selected:
+DeepGEMM 原来只认 SM90 / SM100 / SM120 三种架构。Thor 报的是 **11**，所以任何调用都会在选核之前直接报错：
 
 ```
 RuntimeError: Assertion error (csrc/apis/gemm.hpp:225): Unsupported architecture
 ```
 
-SM110 shares the SM100 `tcgen05` kernel family — the device code is gated on
-`__CUDA_ARCH__ >= 1000` (true for `sm_110` = 1100), the CUTLASS UMMA/tcgen05
-macros resolve identically, and DeepJIT already derives the correct target
-(`"110f"` for major 11). So the entire change is teaching the **host
-dispatcher** that SM110 is an SM100-class device. Device code, CUTLASS, and
-DeepJIT are untouched.
+SM110 和 SM100 共用同一套 kernel，所以只需要告诉「调度层」：**SM110 属于 SM100 这一类**。
 
-**45 comparison sites across 10 host headers**, in four textual shapes. The whole
-change is one commit — [`db919b4`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/commit/db919b4),
-45 insertions / 45 deletions:
+- 改动范围：**10 个头文件、45 处判断**，只是把 `11` 加进已有的条件里。
+- 设备端代码、CUTLASS、JIT 编译流程**都没动**。
+- 附带加了一个能力查询接口 `deep_gemm.supports_arch('sm110')`，让 SGLang 能自动判断当前装的是不是支持 SM110 的版本（否则它会退回 Triton 后端）。
 
-| # | Before | After | Sites |
-|---|---|---|---|
-| 1 | `arch_major == 10` | `(arch_major == 10 or arch_major == 11)` | 30 |
-| 2 | `arch_major == 10 or arch_major == 12` | `(arch_major == 10 or arch_major == 11 or arch_major == 12)` | 7 |
-| 3 | `get_arch_major() == 10` | `(get_arch_major() == 10 or get_arch_major() == 11)` | 7 |
-| 4 | `arch_major == 9 or arch_major == 10` | `(arch_major == 9 or arch_major == 10 or arch_major == 11)` | 1 |
-
-| File | Sites | Area |
-|---|---:|---|
-| [`csrc/apis/attention.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/apis/attention.hpp) | 16 | MQA logits: dense, sparse, paged; metadata builders |
-| [`csrc/apis/gemm.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/apis/gemm.hpp) | 10 | FP8/FP4 dense + grouped GEMM, BF16 dense + grouped GEMM, k-grouped |
-| [`csrc/apis/einsum.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/apis/einsum.hpp) | 5 | `bmk_bnk_mn`, `bhr_hdr_bhd`, `bhd_hdr_bhr`, FP8 BMM |
-| [`csrc/apis/layout.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/apis/layout.hpp) | 5 | SF transform into required layout (dense + k-grouped) |
-| [`csrc/utils/layout.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/utils/layout.hpp) | 3 | FP4 packed-AB checks, default recipe |
-| [`csrc/apis/mega_moe.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/apis/mega_moe.hpp) | 2 | `fp8_fp4_mega_moe`, `bf16_mega_moe` (SM100 path) |
-| [`csrc/apis/mega_gate.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/apis/mega_gate.hpp) | 1 | `bf16_mega_gate` |
-| [`csrc/apis/mega_mhc.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/apis/mega_mhc.hpp) | 1 | `mega_mhc` |
-| [`csrc/apis/hyperconnection.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/apis/hyperconnection.hpp) | 1 | `tf32_hc_prenorm_gemm` |
-| [`csrc/jit_kernels/heuristics/runtime.hpp`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/blob/main/csrc/jit_kernels/heuristics/runtime.hpp) | 1 | contiguous-MK alignment (`224/32/32`, the SGLang-tuned SM100 values) |
-
-Deliberately **not** changed: `csrc/runtime/jit.hpp` (major 11 already falls
-through to the correct DeepJIT default), the `arch_major == 9` Hopper-only paths,
-and all `arch_major == 12` branches (SM120 keeps its own kernel family).
+完整的逐文件改动清单见 [docs/sm110-thor-support.md](docs/sm110-thor-support.md) 第 1 节。
 
 ---
 
-## 2. Verification progress
+## 2. 怎么安装
 
-**Read this before trusting the fork.** The 45 sites are mechanically uniform,
-but each gates a *different* kernel family, so passing one proves little about
-another. Two failure modes are in scope and neither is covered by "another
-kernel worked":
+### 2.1 前置条件
 
-1. A kernel that was previously unreachable may now be **compiled for
-   `sm_110` for the first time** — PTXAS may reject it.
-2. Worse, an `__CUDA_ARCH__ >= 1000` guard may hold on SM110 while the kernel's
-   assumptions do not, producing a **silently wrong** result.
-
-**These are complete runs, not samples.** All three files ran to the end with
-exit status 0 — **1074 cases, zero assertion failures, zero tracebacks** — and
-every section hit its expected case count exactly:
-
-| Suite | Cases | Exit |
-|---|---:|---|
-| `test_bf16.py` | 449 | 0 |
-| `test_fp8_fp4.py` | 353 | 0 |
-| `test_layout.py` | 272 | 0 |
-
-Per section (`Perf` lines = cases that passed their assertion):
-
-| Kernel path | Cases run | Cases in section | Status |
-|---|---:|---:|---|
-| BF16 dense GEMM | 84 | 84 | **Verified** |
-| BF16 m-grouped, contiguous | 48 | 48 | **Verified** |
-| BF16 m-grouped, masked | 32 | 32 | **Verified** |
-| BF16 k-grouped, contiguous | 105 | 105 | **Verified** |
-| cuBLASLt GEMM (reference) | 84 | 84 | **Verified** |
-| cuBLASLt batched SYRK | 32 | 32 | **Verified** |
-| cuBLASLt batched SYMM | 64 | 64 | **Verified** |
-| FP8 dense GEMM | 42 | 42 | **Verified** |
-| FP8 m-grouped, contiguous | 48 | 48 | **Verified** |
-| FP8 m-grouped, masked | 32 | 32 | **Verified** |
-| FP8 k-grouped GEMM | 231 | 231 | **Verified** |
-| SF layout pack/transpose | 216 | 216 | **Verified** |
-| k-grouped SF layout | 56 | 56 | **Verified** |
-| k-grouped psum SF layout | 224 (unguarded) | 224 | **Verified**, §2.1 |
-| FP4 k-grouped GEMM | 189 (unguarded) | 189 | **Verified**, §2.1 |
-| FP4 dense / m-grouped / Mega MoE | 0 | — | **not tested** |
-| JIT `bf16_gemm_nt` vs dequantized ref | — | — | **Verified**, `rel_L2 = 1.66e-3` |
-| JIT `fp8_gemm_nt` vs dequantized ref | — | — | **Verified**, `rel_L2 = 1.65e-3` |
-| SGLang real layer path, block-FP8, `M=N=K=4096` | — | — | **Verified**, `rel_L2 = 1.66e-3` |
-| **SGLang end-to-end, `Qwen3-8B-FP8`** | 4 prompts | 4 prompts | **Verified** — coherent text, matches Triton control |
-| Stock build fails loudly, not silently | — | — | **Verified** (`Unsupported architecture`) |
-| **Steady-state throughput vs Triton** (prefill, real data) | 41 req / 1.44 M tok | — | **Verified** — **1.47x** overall, 2.21x on ~4k requests |
-
-The end-to-end row is the strongest evidence here: it drives every linear in the
-model through DeepGEMM's block-scaled FP8 kernel, including UE8M0-requantized
-weight scales, and yields coherent — not merely finite — text.
-
-**Two kernel paths are reachable on SM110 but skipped by the original test
-bodies**: FP4 is omitted from the option list, and psum returns early unless the
-major is 10. Both were exercised separately using the existing generators and
-correctness checks, without changing the real device architecture:
-
-- **FP4 (k-grouped).** `test_fp8_fp4.py` only appends the FP4 option under
-  `if arch_major == 10` (line 233), so on Thor the file enumerates FP8 alone.
-  But `enumerate_k_grouped_contiguous` has a complete FP4 branch (K-major only,
-  `gran_k` 32 with `k_alignment` 256/512/768) that is *not* arch-gated, and
-  `csrc/utils/layout.hpp` accepts `kPackedFP4` for major 11. Re-ran the FP4
-  half of that test unguarded: **189 cases, 0 failures** — including bitwise
-  determinism over 20 iterations per case, FP4-vs-converted-FP8 agreement to
-  `1e-14`, and direct-output agreement with FP32 accumulation. See §2.1.
-- **`test_layout.py`'s psum SF section.** Skips itself on any arch but 10 via
-  `if get_arch_major() != 10`. Re-ran unguarded: **224 cases, 0 failures**,
-  bit-exact against the PyTorch reference. See §2.1.
-
-**Not yet covered — unproven, not known-bad:** Mega Gate, Mega mHC, Mega MoE,
-and dense / m-grouped FP4. The attention, einsum and hyperconnection test files
-have now passed as whole files — see §2.3.
-
-**Requires its own verification before being enabled on Thor:** Mega MoE (its
-reference needs TileKernels/TileLang), Mega Gate, Mega mHC, and dense /
-m-grouped FP4. The k-grouped FP4 path is verified separately above.
-
-See [docs/sm110-thor-support.md §5](docs/sm110-thor-support.md) for the raw
-numbers.
-
-### 2.1 Paths reachable on SM110 that the suite refuses to test
-
-Two kernel paths became reachable on Thor *because of this patch*, while the
-upstream test files decline to exercise them. Both were re-run with the guard
-removed, and both pass.
-
-**k-grouped psum scale-factor layout.** `test_layout.py` returns before doing
-anything unless the arch major is exactly 10 — but `csrc/apis/layout.hpp` routes
-arch 11 into that same packed-psum path (its two predicates are still commented
-`FP32 on SM100` / `Pre-packed UE8M0 ... on SM100`, and now read
-`arch_major == 10 or arch_major == 11`). The guard describes what the *test*
-trusts, not what the *patched binary* will dispatch to.
-
-Re-ran the same assertions with the guard removed: **224 cases, bit-exact
-against the PyTorch reference, 0 failures**, covering `compact_sf` in both
-states, three `ks` forms (explicit aligned, `None`, empty), `num_groups` of
-8/16/72, `gran_k` of 32 and 128, and `k_alignment` of 32/128/256/384.
-
-**FP4 (k-grouped GEMM).** `test_fp8_fp4.py:233` appends the FP4 option only when
-`arch_major == 10`, so on Thor that file tests FP8 alone — yet the patch accepts
-`kPackedFP4` for major 11 (`csrc/utils/layout.hpp:64,73`:
-`arch_major == 10 or arch_major == 11 or arch_major == 12`). Crucially the FP4
-*cases* are not arch-gated: `enumerate_k_grouped_contiguous` has a full FP4
-branch (K-major only, `gran_k=32`, `k_alignment` 256/512/768) that runs for any
-arch. Only the test body was holding it back.
-
-Re-ran the FP4 half of that test unguarded: **189 cases, 0 failures**, exit 0.
-Each case ran 20-iteration bitwise determinism against an initial kernel call.
-Accumulation cases additionally checked FP4-vs-converted-FP8 agreement below
-`1e-14` and `calc_diff(d, ref_d) < 0.02`; direct-output cases checked agreement
-with FP32 accumulation. Covered 7 grouped shapes
-(`num_groups` 4/8/16), all three `k_alignment` values, `accumulate` both ways,
-and `out_dtype` FP32/BF16.
-
-So FP4 is **verified, not merely reachable** — but by a harness of ours, not by
-the upstream suite, and only for the k-grouped path. The dense/`m-grouped` FP4
-paths and the Mega MoE FP4 path remain unchecked.
-
-Scope note: `Qwen3-8B-FP8` is a dense model, so the end-to-end run exercised only
-the **dense** block-FP8 GEMM path. Grouped / MoE paths are **not** covered by
-that run, which is why they are listed separately above.
-
-### 2.2 One caveat about the run itself
-
-The installed package changed during the sweep (its files have an 11:03
-modification time). Thus this was not a controlled, immutable-build run:
-BF16 started before the change, while FP8 and layout started afterwards.
-All three processes finished successfully, and the later build passed 625
-cases, demonstrating SM110 support for the exercised paths. We did not retain
-both binaries or establish how the replacement occurred, so we cannot claim
-they differ only in embedded paths or prove that an atomic replacement left
-the first process unaffected. A single-build rerun is needed for strict
-artifact-level reproducibility.
-
-### 2.3 The other API families
-
-Beyond the three main files, the remaining runnable test files were executed as
-whole files against the same patched build. All exited 0 with **zero
-tracebacks**:
-
-| File | Cases | Exit | Notes |
-|---|---:|---:|---|
-| `test_attention.py` | 4 sections | 0 | GEMM skip-head-mid + MQA logits (dense/paged/sparse) |
-| `test_einsum.py` | 60 | 0 | BF16 and FP8 batched matmuls |
-| `test_hyperconnection.py` | 24 | 0 | `tf32_hc_prenorm_gemm` |
-
-`test_mega_gate.py`, `test_mega_mhc.py` and `test_mega_moe.py` cannot run here:
-they need TileKernels / TileLang, which are not installed on this machine. Those
-paths remain unchecked.
-
----
-
-## 3. Test device
-
-All recorded results come from this machine and no other:
-
-| Component | Value |
+| 项目 | 要求 |
 |---|---|
-| Board | NVIDIA Jetson AGX Thor Developer Kit (Tegra, aarch64) |
-| GPU | `NVIDIA Thor`, compute capability **11.0** (`sm_110`), **20 SMs**, 128 GB unified |
-| L4T / kernel | R39 (release 2.0), `6.8.12-1021-tegra` |
-| OS | Ubuntu 24.04.4 LTS, 14 CPU cores |
-| Driver | `595.78` (nvidia-smi reports CUDA 13.2) |
-| CUDA toolkit | **13.0** — `nvcc` V13.0.88 |
-| Host compiler | GCC/G++ 13.3.0 |
+| GPU | Thor（SM110）。也兼容 SM90 / SM100 |
+| 驱动 / CUDA | 驱动 `595.78`+，CUDA Toolkit **13.0**+（必须有 `nvcc`，运行时 JIT 要用） |
+| 编译器 | g++ 13（需要 C++20） |
 | PyTorch | `2.14.1+cu130` |
-| Python env | conda env `inscope`, Python 3.12 |
+| 系统依赖 | `sudo apt-get install -y libdw-dev` |
 
-JIT compiles at run time with `--gpu-architecture=sm_110f`.
-
----
-
-## 4. Build and run
-
-### 4.1 Prerequisites
-
-- An **SM110 / SM100 / SM90** GPU. On Thor: driver `595.78`+ and CUDA **13.0**+.
-- **CUDA Toolkit 12.9 or newer** with `nvcc` on `PATH`.
-- A **C++20 compiler with `<format>` support** (GCC 13 works; the toolkit's own
-  `c++` is not enough on Jetson).
-- `libdw-dev` — required by the runtime JIT:
-  ```bash
-  sudo apt-get install -y libdw-dev
-  ```
-- **PyTorch** matching your CUDA. On Thor the working combination is
-  `torch 2.14.1+cu130`.
-- `git` with submodule access to `github.com/NVIDIA/cutlass` and
-  `github.com/deepseek-ai/DeepJIT`.
-
-### 4.2 Get the source and submodules
+### 2.2 拉代码
 
 ```bash
 git clone --recursive https://github.com/yeasen-z/DeepGEMM-thor-sm110.git
 cd DeepGEMM-thor-sm110
 
-# If you cloned without --recursive, or the submodules are stale:
+# 如果忘了加 --recursive
 git submodule update --init --recursive
 ```
 
-Both submodules are mandatory: `third-party/cutlass` supplies the CuTe UMMA
-headers, and `third-party/deep_jit` supplies the JIT runtime headers.
+两个子模块都必须有：`third-party/cutlass` 和 `third-party/deep_jit`。
 
-### 4.3 Point the build at your environment
-
-Two things must be right before you build: the CUDA install, and — more
-importantly — **which Python builds the extension**.
+### 2.3 编译并安装
 
 ```bash
-export CUDA_HOME=/usr/local/cuda          # or e.g. /home/<user>/cuda_home_thor
-export CUDA_PATH="$CUDA_HOME"
-export CUDACXX="$CUDA_HOME/bin/nvcc"
-export CXX=g++                            # a real C++20 g++, not nvcc
+# 0) 先进入你要安装的目标环境（conda activate / source venv/bin/activate）
+conda activate your-env
 
-nvcc --version && $CXX --version          # sanity check
-```
+# 1) 指定 CUDA
+export CUDA_HOME=/usr/local/cuda          # Thor 上可能是 /home/<user>/cuda_home_thor
 
-> #### Build with the Python you are going to install into
->
-> `_C.so` is linked against torch's C++ ABI, and that ABI is **not** stable
-> across torch releases: `c10::cuda::c10_cuda_check_implementation` gained a
-> `CUDAErrorLogCapture*` parameter in torch 2.14. A `_C.so` built against 2.14
-> fails to import under 2.13 with
-> `undefined symbol: _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_jb`,
-> and vice versa.
->
-> `build_sgl_deep_gemm.sh` picks its interpreter with
-> `PYTHON_EXE="${PYTHON_EXE:-$(which python3 || which python)}"`. If your `PATH`
-> has more than one Python — very common when you also export `$CUDA_HOME/bin`,
-> which often contains its own `python3` — the *wrong* one can be chosen and the
-> resulting wheel is silently unusable in your target environment. Select it
-> explicitly:
->
-> ```bash
-> which -a python3                                     # ALL of them, in PATH order
-> export PYTHON_EXE=/path/to/your/env/bin/python       # pin the one you mean
->
-> # Or simply put your env first and confirm what wins:
-> export PATH="/path/to/your/env/bin:$PATH"
-> which python3
-> python3 -c 'import torch,sys; print(sys.version.split()[0], torch.__version__, torch.version.cuda)'
-> ```
->
-> The build script now prints the interpreter and torch version it will use, and
-> refuses to run if that interpreter cannot import torch. Set
-> `DG_SKIP_TORCH_CHECK=1` to silence the extra ABI probe.
+# 2) 指定用哪个 Python 编译 —— 必须就是上面这个环境
+export PYTHON_EXE="$(which python)"
 
-### 4.4 Build and install
-
-`_C.so` is the only compiled artifact — a plain `TORCH_LIBRARY` shared object
-with no CPython dependency. There are two ways to build it, and **either is
-fine**; they differ only in what they leave behind:
-
-| | `build_sgl_deep_gemm.sh` (wheel) | `build_ext.py` (in place) |
-|---|---|---|
-| Compiles | `csrc/torch_library_api.cpp` | `csrc/torch_library_api.cpp` |
-| Produces | `sgl-deep-gemm` wheel | `_C.so` only |
-| Install | `pip install` the wheel | overwrites the extension |
-| Use when | shipping / clean environments | iterating on `csrc/` |
-
-> #### This repository ships no prebuilt `_C.so`, on purpose
->
-> Build it yourself. A `_C.so` is only valid for an exact
-> **(CPU architecture, torch ABI, CUDA major)** triple, so a binary we upload
-> would be unusable for most readers:
->
-> | Dimension | Our build | Consequence for someone else |
-> |---|---|---|
-> | CPU arch | `ARM aarch64` (Thor) | will not load on x86_64 at all |
-> | torch ABI | `torch 2.14.1` (`c10_cuda_check_implementation` **with** `CUDAErrorLogCapture*`) | `undefined symbol` under torch ≤ 2.13 |
-> | CUDA major | `libcudart.so.13` / `libcublas.so.13` | missing libraries under CUDA 12 |
->
-> Both halves of that torch-ABI split are present on the development machine
-> itself (`inscope` → 2.14.1, `prefillbench-thor` → 2.13.0), which is exactly
-> why this is easy to get wrong. Since the runtime JIT already requires a CUDA
-> toolchain on the target machine, building the host layer adds no new
-> requirement. Building also avoids the checksum trap described below.
-
-**Build a wheel.** `build_sgl_deep_gemm.sh` initialises the
-submodules, links the CUTLASS headers into `deep_gemm/include`, stages the
-package, compiles `_C.so`, and produces a wheel whose import name is still
-`deep_gemm`: `docs/` and `csrc/` are also copied into the wheel so that
-assertion messages and error-lookup material survive an install.
-
-```bash
+# 3) 构建 wheel（脚本会打印它实际使用的解释器和 torch 版本，请核对）
 bash build_sgl_deep_gemm.sh
-pip install --no-deps dist/sgl_deep_gemm-*.whl   # use the actual name it prints
+
+# 4) 安装（用同一个环境的 pip）
+pip install --force-reinstall --no-deps dist/sgl_deep_gemm-*.whl
 ```
 
-#### Distributing the patch: the wheel version is `0.2.3+sm110`
+> 第 0 步不能跳过：`pip install` 用的是当前环境的 pip。如果你只 `export PYTHON_EXE`
+> 而没激活环境，编译和安装可能落到两个不同的环境里，装完 import 会失败。
 
-The wheel's version comes from `sgl_deep_gemm/VERSION`, which this fork sets to
-**`0.2.3+sm110`** — PEP 440 local version, so it stays comparable to the upstream
-`0.2.3` it is patched from while being distinguishable from it. This is not
-cosmetic; pip keys installation on the version:
+装出来的包名是 **`sgl-deep-gemm`**，版本 **`0.2.3+sm110`**，导入名仍然是 `deep_gemm`（SGLang 的代码不用改）。
 
-| Installed | Wheel you install | What pip does |
-|---|---|---|
-| `0.2.3` | `0.2.3` (stock version) | **Silently does nothing** — "already installed with the same version as the provided wheel. Use `--force-reinstall`…" |
-| `0.2.3` | `0.2.3+sm110` (**this fork**) | Installs normally; **no** `--force-reinstall` needed |
+`0.2.3+sm110` 满足 SGLang 的依赖 `sgl-deep-gemm==0.2.3`，所以不影响 SGLang 安装依赖。
 
-The first row is the trap: a wheel built at the stock `0.2.3` does **not**
-replace an existing DeepGEMM, so the user keeps running the unpatched `_C.so`
-while believing the install succeeded. The checked-in `0.2.3+sm110` avoids it.
+### 2.4 验证装好了
 
-`0.2.3+sm110` also still satisfies SGLang's pin `sgl-deep-gemm==0.2.3`, because
-`==` ignores the local segment — so dependency resolution is unaffected, and it
-sorts **above** `0.2.3` as expected. The resulting wheel is
-`sgl_deep_gemm-0.2.3+sm110-py3-none-any.whl` (the `+` is kept literally in the
-filename).
-
-If you rebuild at a different version, the remaining options are:
-
-1. **Force the reinstall** if you deliberately build with the stock `0.2.3`:
-
-   ```bash
-   pip install --force-reinstall --no-deps dist/sgl_deep_gemm-*.whl
-   ```
-
-   `sgl-deep-gemm` currently declares **no** runtime dependencies
-   (`dependencies = []` in its `pyproject.toml`), so `--force-reinstall` alone
-   would be harmless today. Keep `--no-deps` anyway: it is the belt-and-braces
-   form that stays correct if the wheel later gains dependencies, and it stops
-   pip resolving or upgrading anything you did not ask for. (It does **not**
-   protect you against re-downloading torch — that is not a dependency here.)
-
-2. **Skip the wheel entirely** — overwrite the extension by hand. Fewest moving
-   parts for a single machine, and it cannot disturb pip's metadata at all:
-
-   ```bash
-   SP=$(python -c 'import deep_gemm,os;print(os.path.dirname(deep_gemm.__file__))')
-   cp "$SP/_C.so" "$SP/_C.so.orig"     # keep the stock one for A/B
-   cp /path/to/built/_C.so "$SP/_C.so"
-   ```
-
-   Note this replaces the binary only; if you also need the Python-side changes
-   from a newer revision, this route will not bring them.
-
-> **Don't try to recognise the patch by hashing `_C.so`.** The binary embeds the
-> absolute path of the sources it was compiled from (the assertion messages
-> reference them, and they are visible via `strings`). Two builds of
-> byte-identical sources in different directories therefore produce **different**
-> binaries of identical size, differing only in that embedded path. A hash you
-> compute yourself will not match anyone else's, so a mismatch is not evidence of
-> a bad build. Use the behavioural check in §4.5 instead: `bf16_gemm_nt` must
-> run, and the stock library must fail with `Unsupported architecture`.
-
-Whichever route you use, confirm you really got the patched build — do it
-behaviourally, as in §4.5.
-
-**Compile `_C.so` in place.** Faster when iterating on `csrc/`;
-you compile straight over the installed extension:
+**在代码目录外面执行**（否则会 import 到源码目录而不是装好的包）：
 
 ```bash
-SP=$(python -c 'import deep_gemm,os;print(os.path.dirname(deep_gemm.__file__))')
-python sgl_deep_gemm/build_ext.py "$PWD" "$SP/_C.so"
-```
-
-`build_ext.py` shells out to `${CXX:-c++}` with `-std=c++20`. It compiles
-`csrc/torch_library_api.cpp` — the *host* layer only — and finds CUTLASS through
-`-I third-party/cutlass/include`, which is already in its include list, so this
-step needs **no** extra links.
-
-Back up the stock extension before overwriting it, so you can A/B the two:
-
-```bash
-cp "$SP/_C.so" "$SP/_C.so.orig"
-```
-
-> **Two different header lookups — don't confuse them.**
-> `build_ext.py` compiles the host layer and resolves `<cutlass/...>` from
-> `third-party/cutlass/include`. The **runtime JIT** is separate: it emits
-> `#include <deep_gemm/impls/sm100_bf16_gemm.cuh>` and compiles it with
-> `--include-path <package>/include`. Since 55 files under
-> `deep_gemm/include/deep_gemm/` pull in `<cutlass/...>` / `<cute/...>`, the
-> package's `include/cutlass` and `include/cute` must exist **at run time**.
-> The wheel build copies them into the wheel (`build_sgl_deep_gemm.sh` lines 55-56), so a
-> `pip install` of the wheel is self-contained. If you instead run `deep_gemm`
-> straight from a source checkout (`PYTHONPATH=$PWD`), create them yourself:
->
-> ```bash
-> ln -sfn "$PWD/third-party/cutlass/include/cutlass" deep_gemm/include/cutlass
-> ln -sfn "$PWD/third-party/cutlass/include/cute"    deep_gemm/include/cute
-> ```
-
-### 4.5 Verify the build is live
-
-**Run this from outside the source tree.** The repo root contains a `deep_gemm/`
-source directory, and Python prefers the current directory over `site-packages`.
-Run the snippet from inside the clone and you import the *source tree*, which has
-no compiled `_C.so`, so you get:
-
-```
-ImportError: DeepGEMM extension is missing; build the TORCH_LIBRARY _C module first.
-```
-
-That is not a failed install — it is the wrong `sys.path`. `cd` somewhere else
-(simplest), or use the doctor command in §4.7, which reports where it loaded from.
-
-```bash
-cd /tmp   # or anywhere outside the clone
+cd /tmp
 python -c "
-import torch, deep_gemm
-print('cap', torch.cuda.get_device_capability())
+import deep_gemm, torch
+print('version  :', deep_gemm.__version__)
+print('capability:', torch.cuda.get_device_capability())
+print('supports sm110:', deep_gemm.supports_arch('sm110'))
 a = torch.randn(4096, 4096, dtype=torch.bfloat16, device='cuda')
 b = torch.randn(4096, 4096, dtype=torch.bfloat16, device='cuda')
 d = torch.empty(4096, 4096, dtype=torch.bfloat16, device='cuda')
 deep_gemm.bf16_gemm_nt(a, b, d)
-print('OK', float(d.abs().mean()))
+print('GEMM OK', float(d.abs().mean()))
 "
 ```
 
-Expected on Thor with the patched build:
+Thor 上正常应该输出：
 
 ```
-cap (11, 0)
-OK 51.0
+version  : 0.2.3+sm110
+capability: (11, 0)
+supports sm110: True
+GEMM OK 51.0
 ```
 
-With the stock `_C.so` this dies with
-`RuntimeError: Assertion error (csrc/apis/gemm.hpp:225): Unsupported architecture`.
+一条命令做全面体检：
 
-That runtime difference — not a checksum — is the reliable way to tell the two
-apart. `_C.so` embeds the absolute path of the sources it was built from (the
-assertion messages point at them), so any hash of it changes with the build
-directory even when the sources are byte-identical.
+```bash
+python -m deep_gemm.doctor
+```
 
-### 4.6 Ask the build what it supports
+---
 
-The Python side and `_C.so` are installed separately, so they can disagree —
-typically when the wheel's Python files are current but the extension is stale.
-A capability query answered by the **Python** package would lie in exactly that
-case, so the answer comes from the compiled binary:
+## 3. 怎么配置
+
+### 3.1 SGLang 环境变量
+
+```bash
+export CUDA_HOME=/usr/local/cuda
+export SGLANG_ENABLE_JIT_DEEPGEMM=1
+
+python -m sglang.launch_server \
+    --model-path Qwen/Qwen3-8B-FP8 \
+    --fp8-gemm-backend deep_gemm \
+    --dtype bfloat16
+```
+
+### 3.2 SGLang 侧还需要两处改动
+
+**下面的改动在 SGLang 仓库里，不在本仓库。** SM100 的 FP8 kernel 要求权重 scale 是 UE8M0 格式，而 SGLang 的设备判断没包含 SM110，不改的话会直接 trap（`CUDA_ERROR_LAUNCH_FAILED`）：
 
 ```python
-import deep_gemm
-deep_gemm.supported_arch_majors()   # -> (9, 10, 11, 12)
-deep_gemm.supports_arch('sm110')    # -> True
-deep_gemm.supports_arch(11)         # -> True
-deep_gemm.supports_arch('sm90')     # -> True
-deep_gemm.supports_arch('sm80')     # -> False
+# 1. configurer.py —— 把 SM110 加进去
+DEEPGEMM_SCALE_UE8M0 = ENABLE_JIT_DEEPGEMM and (
+    get_platform().is_sm100 or get_device_sm() in (110, 120, 121)
+)
+
+# 2. fp8_utils.py —— 只在真的不支持时才退回 triton
+elif (
+    backend == "auto"
+    and get_platform().is_sm110
+    and not deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0
+):
+    backend = "triton"
 ```
 
-`supports_arch` accepts a major (`11`), a CUDA-style number (`110`) or an
-`sm`-style name (`'sm110'`, `'sm_110'`). This is safe to call at **import time**,
-before any CUDA context exists — which is what frameworks need, because choices
-like "enable the UE8M0 FP8 scale path" are made before the model loads.
+改动前后对比和原理见 [docs/sm110-thor-support.md](docs/sm110-thor-support.md) 第 6 节。
 
-A stock upstream `_C.so` has no such symbol, so the call raises `AttributeError`
-instead of returning a wrong `True`. That asymmetry is the point.
+### 3.3 JIT 缓存（可选）
 
-### 4.7 Diagnose an install: `python -m deep_gemm.doctor`
-
-One command, everything needed to explain a broken install, with a non-zero exit
-code when something is actually wrong:
-
-```
-$ python -m deep_gemm.doctor
-DeepGEMM doctor
-============================================================
-version               : 0.2.3+sm110
-package               : .../site-packages/deep_gemm
-_C.so                 : .../deep_gemm/_C.so (2,050,896 bytes, built 2026-10-22 11:44)  [ok]
-CUDA_HOME             : /path/to/cuda  [ok]
-nvcc                  : /path/to/cuda/bin/nvcc  [ok]
-device headers        : /path/to/cuda/include/curand_kernel.h  [ok]
-torch                 : 2.14.1+cu130 (cuda 13.0)  [ok]
-supported arch majors : sm9, sm10, sm11, sm12  [ok]
-device                : NVIDIA Thor, sm_110 (compute capability 11.0), 20 SMs  [ok]
-arch check            : sm11 is supported by this build  [ok]
-JIT cache             : /home/user/.dj  (default; set DG_JIT_CACHE_DIR to move)
-JIT cached kernels    : 530 entries in /home/user/.dj/cache
-
-running a 128x128x128 bf16 GEMM through the dispatcher ...
-dispatch              : bf16_gemm_nt ran, max|diff| vs fp32 ref = 0.0078  [ok]
-============================================================
-
-RESULT: OK
-```
-
-That is real output from this machine (paths shortened); the `_C.so` size and
-build time are this build's, so yours will differ.
-
-It reports the `_C.so` **path, size and build time** but never a hash: the
-binary embeds its build-time source path, so a hash differs between
-byte-identical builds and only produces false alarms.
-
-### 4.8 Environment variables and the JIT cache
-
-The runtime JIT compiles kernels on first use and caches the resulting cubins.
-DeepGEMM's variable prefix is `DG`; unset variables fall back to the global
-`DJ_` prefix, and then to the built-in default.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `DG_JIT_CACHE_DIR` | `$HOME/.dj` | Where compiled kernels are cached |
-| `DJ_JIT_CACHE_DIR` | — | Global fallback if the `DG_` form is unset |
-| `CUDA_HOME` | — | Required, even to `import deep_gemm` |
-
-`DG_JIT_CACHE_DIR` accepts **colon-separated paths**. The **first is the writable
-root**; the rest are **read-only lookup roots**:
+kernel 第一次用到时会现场编译并缓存。默认缓存在 `$HOME/.dj`，想换个地方：
 
 ```bash
 export DG_JIT_CACHE_DIR=/var/cache/deepgemm:/opt/deepgemm-baked
 ```
 
-A kernel is looked up in every root in order, so a container image can bake a
-warm cache into `/opt/deepgemm-baked` and still let each run write new kernels to
-the writable root. Layout is `<root>/cache/<family>.<hash>/`.
-
-**First run is slow, and that is expected.** The cache is per (kernel, shape,
-option) combination, so warm-up cost scales with how many shapes you touch — a
-serving stack that pre-warms thousands of `M` values can spend minutes compiling
-before the first token. It happens **once** per cache directory. If startup time
-matters, pre-warm deliberately (SGLang: `python -m sglang.compile_deep_gemm`, or
-`SGLANG_JIT_DEEPGEMM_FAST_WARMUP=1` to cut the warm-up set).
-
-### 4.9 Run the test suites
-
-```bash
-cd sgl_deep_gemm/tests
-python -u test_bf16.py
-python -u test_fp8_fp4.py
-python -u test_layout.py
-```
-
-A `Perf (...)` line is printed only after that case's assertion has passed, so
-the number of `Perf` lines is a direct completeness signal. These suites are
-long (the FP8 sweep is heavy) and the JIT compiles each shape on first use;
-`test_bf16.py` alone takes many minutes on a 20-SM part. To run one subset,
-call the individual test function instead of the whole file.
-
-> **Which directory to run.** `sgl_deep_gemm/tests/` is the superset: it holds
-> all 14 files of the repo-root `tests/` plus 13 more Mega MoE / TRT-LLM / SiTU
-> variants that need extra dependencies (TileKernels, TileLang, DeepEP). The
-> shared files are also **newer** there — they carry the SM120 `skip:` guards
-> and `test_bf16_repeatability` / `test_sm90_block32` entry points that the
-> repo-root copies lack. All results recorded here come from
-> `sgl_deep_gemm/tests/`.
+冒号分隔：**第一个是写入目录，后面的是只读查找目录**（适合在镜像里预烤一份缓存）。
 
 ---
 
-## 5. End-to-end result (SGLang + `Qwen3-8B-FP8`)
+## 4. 注意事项
 
-The strongest evidence that the patch is useful, not merely harmless: SGLang
-serving a real FP8 checkpoint on Thor with DeepGEMM as the FP8 GEMM backend.
+1. **不要用 `pip install .`。**
+   仓库根目录的 `setup.py` 是上游留下的老入口，在 v0.2.3 上本身就是坏的（构建会失败）。给 SGLang 用一律走 `bash build_sgl_deep_gemm.sh`。
 
-```bash
-export CUDA_HOME=/path/to/cuda
-export SGLANG_ENABLE_JIT_DEEPGEMM=1
-export PYTHONPATH=/path/to/sglang/python
+2. **不要同时安装 `sgl-deep-gemm` 和 `deep_gemm` 两个包。**
+   它们发行名不同，但会往同一个 `deep_gemm/` 目录写文件，可能互相覆盖；卸载其中一个可能破坏另一个。
 
-# DeepGEMM backend
-python -m sglang.launch_server \
-    --model-path Qwen/Qwen3-8B-FP8 \
-    --fp8-gemm-backend deep_gemm \
-    --dtype bfloat16
+3. **编译用的 Python 必须和安装用的环境一致。**
+   编译产物和 torch 的 C++ ABI 绑定，torch 2.13 和 2.14 不兼容。`build_sgl_deep_gemm.sh` 会打印它用的是哪个解释器，请确认一下；最稳妥的是显式设置 `PYTHON_EXE`。
 
-# Control: same model, Triton backend
-python -m sglang.launch_server \
-    --model-path Qwen/Qwen3-8B-FP8 \
-    --fp8-gemm-backend triton \
-    --dtype bfloat16
-```
+4. **不要用 md5 / 哈希去判断装的是不是补丁版。**
+   编译产物里嵌了源码的绝对路径，同样的源码在不同目录构建出来的文件哈希不同。用第 2.4 节的运行时验证来判断。
 
-On Thor with `--fp8-gemm-backend deep_gemm`, all four recorded completions were
-coherent and semantically matched the Triton control:
+5. **第一次跑会很慢，这是正常的。**
+   kernel 按「形状 + 选项」逐个编译，缓存一次之后就不慢了。SGLang 场景可以预热：`python -m sglang.compile_deep_gemm`。
 
-```
-['The capital of France is']                  -> ' Paris. The capital of Germany is Berlin. The capital of Italy is Rome.'
-['1 + 1 =']                                   -> ' 2, 2 + 1 = 3, 3 + '
-['def fibonacci(n):']                         -> '\n    if n == 0:\n        return 0\n    elif n'
-['The largest planet in the solar system is'] -> ' Jupiter, with a diameter of about 142,796 km'
-```
+6. **`CUDA_HOME` 必须设置。**
+   连 `import deep_gemm` 都需要它，因为运行时要用 `nvcc` 现场编译 kernel。如果报错找不到 CUDA，看 [docs/sm110-thor-support.md](docs/sm110-thor-support.md) 第 4.2 节。
 
-This drives every linear in the model through DeepGEMM's block-scaled FP8 kernel,
-including UE8M0-requantized weight scales. `Qwen3-8B-FP8` is **dense**, so this
-covers the dense FP8 path only — not the grouped / MoE paths.
+7. **本仓库不提供预编译二进制。**
+   需要你在自己的机器上编译。因为编译产物和 **CPU 架构 + torch 版本 + CUDA 大版本** 三者严格绑定，传给你的文件在别的机器上装不上。
 
-> The wall times in that cold-start run (506 s DeepGEMM vs 311 s Triton) include
-> one-off JIT compilation and are **not** a performance comparison. A separate
-> steady-state measurement on real data — **prefill only, 24 of 36 layers, 41
-> requests / 1.44 M tokens** — puts DeepGEMM at **1.47x Triton overall** (2.21x on
-> ~4k requests). See
-> [docs/sm110-thor-support.md §5.6](docs/sm110-thor-support.md#56-steady-state-throughput).
+### 还没验证的部分
+
+以下路径本次**没有测试**，要用的话请自行验证：
+
+- Mega MoE、Mega Gate、Mega mHC（它们的参考实现需要 TileKernels / TileLang，本机没装）
+- dense / m-grouped 的 FP4
+
+已充分验证的：BF16 和 FP8 的 dense / grouped GEMM、SF layout、k-grouped FP4、psum、attention、einsum、hyperconnection，以及 `Qwen3-8B-FP8` 端到端推理。
 
 ---
 
-## 6. SGLang integration prerequisite
+## 5. 测试设备
 
-Routing SM110 into the SM100 kernels is necessary but **not sufficient** for
-SGLang. The SM100 block-FP8 kernels require **UE8M0** scales, and SGLang gates
-that on a device check that excludes SM110 — without the two SGLang-side edits,
-arbitrary FP32 scales reach the pack kernel and trap with
-`CUDA_ERROR_LAUNCH_FAILED (719)`. The exact edits and the failure mode are
-documented in
-[docs/sm110-thor-support.md §6](docs/sm110-thor-support.md); they live in the
-SGLang tree, not here.
+所有结果都来自下面这台机器：
 
----
-
-## 7. Beyond the dispatch patch
-
-The SM110 enablement itself is the 45-site change in §1. Everything below is
-**separate** — it does not alter kernel selection, and none of it is needed for
-the patch to work. It exists because integrating this fork into a serving stack
-surfaced avoidable failure modes:
-
-| Change | Problem it removes | Where |
-|---|---|---|
-| `deep_gemm.supported_arch_majors()` / `supports_arch()` | Frameworks had to guess capability from the version string, which cannot distinguish a stale `_C.so` from a current one | §4.6 |
-| `python -m deep_gemm.doctor` | Diagnosing an install meant manually checking five things by hand | §4.7 |
-| Actionable `CUDA_HOME` error | A bare `AssertionError` at import with no hint about the device headers | §4.2 |
-| Build-time prerequisite checks | `nvcc`/headers problems surfaced later as opaque compiler or linker errors | §4.4 |
-| One version source for both build paths | Two build paths reported two different versions for one source tree | §10 |
-| `DG_JIT_CACHE_DIR` semantics | The read-only lookup-root feature was undocumented, so baked caches were unusable | §4.8 |
-
-The capability query is the one piece that touches `csrc/`: it adds a
-`csrc/utils/arch.hpp` constant and one registered read-only accessor. It does not
-change dispatch, and it reads a constant rather than querying the device, so it
-answers without a CUDA context and cannot drift from the device it describes.
-
----
-
-## 8. Fork branch notes
-
-This fork inherits the conventions of the `sgl-project/DeepGEMM` fork:
-
-- `main` tracks upstream updates and should stay clean.
-- `dev` is the active SGL integration branch and can be force-updated during rebases.
-- `release/*` branches are archives for past wheel releases.
-
-> In **this** fork the SM110 enablement is carried on `main` directly; the
-> `dev` / `release/*` conventions above describe the upstream fork layout.
-
----
-
-## 9. One version, one file
-
-`sgl_deep_gemm/VERSION` (`0.2.3+sm110`) is the **only** place this repository
-stores a version. Both build paths read it:
-
-| Reader | How |
+| 项目 | 值 |
 |---|---|
-| `build_sgl_deep_gemm.sh` | stages it to `deep_gemm/VERSION` in the wheel (`tr -d '[:space:]'`) |
-| `setup.py` (`pip install .`) | `get_public_version()` reads the same file |
-| `deep_gemm/__init__.py` | `_read_version()` reads `VERSION` next to itself, falling back to `../sgl_deep_gemm/VERSION` in a source tree |
+| 板卡 | NVIDIA Jetson AGX Thor Developer Kit（Tegra, aarch64） |
+| GPU | `NVIDIA Thor`，compute capability **11.0**（`sm_110`），20 SM，128 GB 统一内存 |
+| L4T / 内核 | R39 (release 2.0)，`6.8.12-1021-tegra` |
+| 系统 | Ubuntu 24.04.4 LTS，14 核 |
+| 驱动 | `595.78` |
+| CUDA | **13.0**（`nvcc` V13.0.88） |
+| 编译器 | GCC/G++ 13.3.0 |
+| PyTorch | `2.14.1+cu130` |
+| Python | conda 环境 `inscope`，Python 3.12 |
 
-This was previously two values. `deep_gemm/__init__.py` hard-coded
-`__version__ = '2.8.0'`, and `setup.py` parsed *that* with a regex, so the same
-tree produced `sgl-deep-gemm 0.2.3+sm110` through one path and `deep_gemm 2.8.0`
-through the other.
+### 验证结果概览
 
-**`2.8.0` was not an older release.** It was an *internal* build number on a
-separate axis from the release tags. `git log` over `deep_gemm/__init__.py`
-gives the internal series as
-`2.1.1 → 2.2.0 → 2.3.0 → 2.4.2 → 2.5.0 → 2.6.1 → 2.8.0`, and `2.8.0` arrives in
-`66081d4` ("Public Release 26/09"), dated 2026-09-10 — before the `v0.2.2`
-(2026-10-01) and `v0.2.3` (2026-10-16) tags, but *newer* than everything else on
-its own axis. The two numbers never referred to the same thing.
+| 测试 | 用例数 | 结果 |
+|---|---:|---|
+| `test_bf16.py` | 449 | 0 失败 |
+| `test_fp8_fp4.py` | 353 | 0 失败 |
+| `test_layout.py` | 272 | 0 失败 |
+| FP4 k-grouped（单独跑） | 189 | 0 失败 |
+| psum SF layout（单独跑） | 224 | 0 失败 |
+| `test_attention.py` / `test_einsum.py` / `test_hyperconnection.py` | 88 | 0 失败 |
+| SGLang + `Qwen3-8B-FP8` 端到端 | 4 prompts | 文本正确 |
 
-Two details are handled so that real packaging tools keep working:
+性能（SGLang 实测，同样 41 个请求 / 144 万 token，prefill 阶段）：
 
-- **A second `+` would be illegal.** PEP 440 allows one local segment. Upstream
-  appended `+<commit>` / `+local`, which on top of `0.2.3+sm110` would produce
-  `0.2.3+sm110+local` — rejected by `packaging.version.parse`. `setup.py` now
-  returns the file's value verbatim, and prints a dirty-tree warning instead of
-  encoding it. Verified: `0.2.3+sm110+abc1234` is invalid, `0.2.3+sm110` is not.
-- **The wheel ships the resolved value.** `CustomBuildPy.copy_version_file()`
-  writes `get_package_version()`'s *result* into `deep_gemm/VERSION` inside the
-  wheel, so `deep_gemm.__version__` equals
-  `importlib.metadata.version('deep_gemm')` for any given install rather than
-  drifting from it.
+| 分组 | DeepGEMM | Triton | 提升 |
+|---|---:|---:|---:|
+| 全部 | **5,331 tok/s** | 3,639 tok/s | **1.47x** |
+| ~4k 短请求 | **12,018 tok/s** | 5,428 tok/s | **2.21x** |
+| ~64k 长请求 | **5,165 tok/s** | 3,571 tok/s | **1.45x** |
 
-Verified end to end: `python setup.py --version` → `0.2.3+sm110`,
-`egg_info`'s `PKG-INFO` → `Version: 0.2.3+sm110`, and `build_sgl_deep_gemm.sh`
-→ `0.2.3+sm110`. The wheel's `deep_gemm/__init__.py` is copied from
-`sgl_deep_gemm/__init__.py`, so an already-installed package is untouched.
-
+> 说明：这是 prefill 阶段、24/36 层的对比（两者条件完全一致，所以比值有效）。完整数据和方法见 [docs/sm110-thor-support.md](docs/sm110-thor-support.md) 第 5.6 节。
 
 ---
 
-## 10. Upstream project
+## 6. 上游项目
 
-This fork replaces the upstream DeepGEMM README with the page you are reading.
-The original is preserved verbatim at
-[README.upstream.md](README.upstream.md) and upstream remains
-[sgl-project/DeepGEMM](https://github.com/sgl-project/DeepGEMM).
+本 fork 替换了首页，上游原始 README 原文保留在 [README.upstream.md](README.upstream.md)。
+上游项目：[sgl-project/DeepGEMM](https://github.com/sgl-project/DeepGEMM)。
