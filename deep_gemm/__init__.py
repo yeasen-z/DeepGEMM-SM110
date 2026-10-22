@@ -468,4 +468,27 @@ except Exception as error:
 # Initialize CPP modules
 _C.init(os.path.dirname(os.path.abspath(__file__)), os.environ.get('CUDA_HOME', '/usr/local/cuda'))
 
-__version__ = '2.8.0'
+
+def _read_version() -> str:
+    """Report the release version, from the same file the packaging reads.
+
+    This used to be a hard-coded internal build number (`2.8.0`) that belonged
+    to a different series than the `v0.2.x` release tags, so the source tree reported a different version from the SGLang wheel.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = (
+        os.path.join(here, 'VERSION'),  # staged / installed layout
+        os.path.join(os.path.dirname(here), 'sgl_deep_gemm', 'VERSION'),  # source tree
+    )
+    for path in candidates:
+        try:
+            with open(path, 'r') as f:
+                version = f.read().strip()
+        except OSError:
+            continue
+        if version:
+            return version
+    return '0.0.0+unknown'
+
+
+__version__ = _read_version()

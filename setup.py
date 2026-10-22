@@ -1,6 +1,4 @@
-import ast
 import os
-import re
 import shutil
 import setuptools
 import subprocess
@@ -48,26 +46,41 @@ third_party_include_dirs = [
 base_wheel_url = 'https://github.com/DeepSeek-AI/DeepGEMM/releases/download/{tag_name}/{wheel_name}'
 
 
+VERSION_FILE = Path(current_dir) / 'sgl_deep_gemm' / 'VERSION'
+
+
+def get_public_version() -> str:
+    """The single release-series version this repository maintains."""
+    public_version = VERSION_FILE.read_text().strip()
+    assert public_version, f'{VERSION_FILE} is empty'
+    return public_version
+
+
 def get_package_version():
-    with open(Path(current_dir) / 'deep_gemm' / '__init__.py', 'r') as f:
-        version_match = re.search(r'^__version__\s*=\s*(.*)$', f.read(), re.MULTILINE)
-    public_version = ast.literal_eval(version_match.group(1))
+    """Read from `sgl_deep_gemm/VERSION` rather than `deep_gemm/__init__.py`.
 
-    revision = ''
-    if DG_USE_LOCAL_VERSION:
-        # noinspection PyBroadException
-        try:
-            status_cmd = ['git', 'status', '--porcelain']
-            status_output = subprocess.check_output(status_cmd).decode('ascii').strip()
-            if status_output:
-                print(f'Warning: Git working directory is not clean. Uncommitted changes:\n{status_output}')
-                assert False, 'Git working directory is not clean'
+    Upstream read `__version__` out of the module, which held an *internal*
+    build number (`2.8.0`) belonging to a different series than the `v0.2.x`
+    release tags. That made `pip install .` stamp a wheel whose version
+    disagreed with the `sgl-deep-gemm` wheel built from the very same tree.
 
-            cmd = ['git', 'rev-parse', '--short', 'HEAD']
-            revision = '+' + subprocess.check_output(cmd).decode('ascii').rstrip()
-        except Exception:
-            revision = '+local'
-    return f'{public_version}{revision}'
+    The version is returned verbatim. Upstream appended a git revision or
+    `+local`, which would make `pip install .` produce `0.2.3+sm110.local`
+    where `build_sgl_deep_gemm.sh` produces `0.2.3+sm110` -- two wheels, one
+    tree, two versions. A dirty tree is still reported, just not encoded.
+    """
+    public_version = get_public_version()
+
+    # noinspection PyBroadException
+    try:
+        status_output = subprocess.check_output(
+            ['git', 'status', '--porcelain']).decode('ascii').strip()
+        if status_output:
+            print(f'Warning: Git working directory is not clean. Uncommitted changes:\n{status_output}')
+    except Exception:
+        pass
+
+    return public_version
 
 
 def get_platform():
@@ -122,8 +135,26 @@ class CustomBuildPy(build_py):
         # Fourth, copy csrc and docs into the wheel for agent-side error lookup
         self.prepare_agent_files()
 
+        # Fifth, ship the version file so `deep_gemm.__version__` resolves at
+        # run time instead of falling back to '0.0.0+unknown'.
+        self.copy_version_file()
+
         # Finally, run the regular build
         build_py.run(self)
+
+    def copy_version_file(self):
+        """Ship the resolved version so runtime and metadata always agree.
+
+        `get_package_version()` is not the identity function in general, so the
+        file is written from its result rather than copied verbatim: that keeps
+        `deep_gemm.__version__` equal to
+        `importlib.metadata.version('deep_gemm')` for the same install.
+        """
+        target = os.path.join(self.build_lib, 'deep_gemm', 'VERSION')
+        resolved = get_package_version()
+        with open(target, 'w') as f:
+            f.write(resolved)
+        print(f'Writing version {resolved} to {target}')
 
     def prepare_agent_files(self):
         # Copy csrc and docs into the wheel for agent-side error lookup

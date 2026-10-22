@@ -12,24 +12,22 @@ record of exactly how far that support has been verified.
 - **Full write-up**: [docs/sm110-thor-support.md](docs/sm110-thor-support.md)
 - **Upstream README** (this fork replaced it, kept for reference): [README.upstream.md](README.upstream.md)
 
-> ### If you are here to serve SGLang: use `build_sgl_deep_gemm.sh`
+> ### Build for SGLang
 >
-> This repo has **two build paths that produce different packages**, and picking
-> the wrong one wastes an afternoon:
+> This fork supports the `sgl-deep-gemm` distribution, imported as `deep_gemm`.
+> Build with `bash build_sgl_deep_gemm.sh`, then install the resulting wheel
+> as described in §4.4. Its version is `0.2.3+sm110`, which satisfies
+> SGLang's dependency `sgl-deep-gemm==0.2.3`.
 >
-> | Path | Command | Produces | Use it for |
-> |---|---|---|---|
-> | **SGLang / this fork's support** | `bash build_sgl_deep_gemm.sh` | `sgl-deep-gemm` **0.2.3+sm110**, import name `deep_gemm` | **Everything in this README.** This is the supported path. |
-> | Upstream legacy | `pip install .` (runs `setup.py`) | `deep_gemm` **2.8.0** | Nothing on SM110. It is DeepGEMM's original build, kept for upstream compatibility. |
+> **Do not run `pip install .` for SGLang, and do not install the `deep_gemm`
+> distribution alongside `sgl-deep-gemm`.** They have different distribution
+> names but own the same `deep_gemm/` package directory. Pip can record both
+> as installed even when their package files have been replaced; uninstalling
+> one can remove files required by the other.
 >
-> `pip install .` does **not** fail — it happily installs a `deep_gemm 2.8.0`
-> that has none of the SM110 changes and that SGLang's `sgl-deep-gemm==0.2.3`
-> pin will not recognise. If you already did that, `pip uninstall deep_gemm`
-> first, then follow §4.4.
->
-> (`2.8.0` is not a typo: upstream v0.2.3's `deep_gemm/__init__.py` carries
-> `__version__ = '2.8.0'`, a leftover from its own tagging. Only
-> `sgl_deep_gemm/VERSION` describes this fork's package.)
+> The root `setup.py` is retained from upstream and is not a supported build
+> route here. Version readers use `sgl_deep_gemm/VERSION` consistently; this
+> does not make the legacy distribution a SGLang installation route.
 
 ---
 
@@ -331,7 +329,15 @@ nvcc --version && $CXX --version          # sanity check
 ### 4.4 Build and install
 
 `_C.so` is the only compiled artifact — a plain `TORCH_LIBRARY` shared object
-with no CPython dependency. **Two supported routes:**
+with no CPython dependency. There are two ways to build it, and **either is
+fine**; they differ only in what they leave behind:
+
+| | `build_sgl_deep_gemm.sh` (wheel) | `build_ext.py` (in place) |
+|---|---|---|
+| Compiles | `csrc/torch_library_api.cpp` | `csrc/torch_library_api.cpp` |
+| Produces | `sgl-deep-gemm` wheel | `_C.so` only |
+| Install | `pip install` the wheel | overwrites the extension |
+| Use when | shipping / clean environments | iterating on `csrc/` |
 
 > #### This repository ships no prebuilt `_C.so`, on purpose
 >
@@ -351,10 +357,11 @@ with no CPython dependency. **Two supported routes:**
 > toolchain on the target machine, building the host layer adds no new
 > requirement. Building also avoids the checksum trap described below.
 
-**Route A — build a wheel.** `build_sgl_deep_gemm.sh` initialises the
+**Build a wheel.** `build_sgl_deep_gemm.sh` initialises the
 submodules, links the CUTLASS headers into `deep_gemm/include`, stages the
 package, compiles `_C.so`, and produces a wheel whose import name is still
-`deep_gemm`:
+`deep_gemm`: `docs/` and `csrc/` are also copied into the wheel so that
+assertion messages and error-lookup material survive an install.
 
 ```bash
 bash build_sgl_deep_gemm.sh
@@ -422,7 +429,7 @@ If you rebuild at a different version, the remaining options are:
 Whichever route you use, confirm you really got the patched build — do it
 behaviourally, as in §4.5.
 
-**Route B — compile `_C.so` in place.** Faster when iterating on `csrc/`;
+**Compile `_C.so` in place.** Faster when iterating on `csrc/`;
 you compile straight over the installed extension:
 
 ```bash
@@ -448,7 +455,7 @@ cp "$SP/_C.so" "$SP/_C.so.orig"
 > `--include-path <package>/include`. Since 55 files under
 > `deep_gemm/include/deep_gemm/` pull in `<cutlass/...>` / `<cute/...>`, the
 > package's `include/cutlass` and `include/cute` must exist **at run time**.
-> Route A copies them into the wheel (`build_sgl_deep_gemm.sh` lines 55-56), so a
+> The wheel build copies them into the wheel (`build_sgl_deep_gemm.sh` lines 55-56), so a
 > `pip install` of the wheel is self-contained. If you instead run `deep_gemm`
 > straight from a source checkout (`PYTHONPATH=$PWD`), create them yourself:
 >
@@ -686,7 +693,7 @@ surfaced avoidable failure modes:
 | `python -m deep_gemm.doctor` | Diagnosing an install meant manually checking five things by hand | §4.7 |
 | Actionable `CUDA_HOME` error | A bare `AssertionError` at import with no hint about the device headers | §4.2 |
 | Build-time prerequisite checks | `nvcc`/headers problems surfaced later as opaque compiler or linker errors | §4.4 |
-| Documented two build paths | `pip install .` silently installs an unrelated `deep_gemm 2.8.0` | top of this page |
+| One version source for both build paths | Two build paths reported two different versions for one source tree | §10 |
 | `DG_JIT_CACHE_DIR` semantics | The read-only lookup-root feature was undocumented, so baked caches were unusable | §4.8 |
 
 The capability query is the one piece that touches `csrc/`: it adds a
@@ -709,7 +716,52 @@ This fork inherits the conventions of the `sgl-project/DeepGEMM` fork:
 
 ---
 
-## 9. Upstream project
+## 9. One version, one file
+
+`sgl_deep_gemm/VERSION` (`0.2.3+sm110`) is the **only** place this repository
+stores a version. Both build paths read it:
+
+| Reader | How |
+|---|---|
+| `build_sgl_deep_gemm.sh` | stages it to `deep_gemm/VERSION` in the wheel (`tr -d '[:space:]'`) |
+| `setup.py` (`pip install .`) | `get_public_version()` reads the same file |
+| `deep_gemm/__init__.py` | `_read_version()` reads `VERSION` next to itself, falling back to `../sgl_deep_gemm/VERSION` in a source tree |
+
+This was previously two values. `deep_gemm/__init__.py` hard-coded
+`__version__ = '2.8.0'`, and `setup.py` parsed *that* with a regex, so the same
+tree produced `sgl-deep-gemm 0.2.3+sm110` through one path and `deep_gemm 2.8.0`
+through the other.
+
+**`2.8.0` was not an older release.** It was an *internal* build number on a
+separate axis from the release tags. `git log` over `deep_gemm/__init__.py`
+gives the internal series as
+`2.1.1 → 2.2.0 → 2.3.0 → 2.4.2 → 2.5.0 → 2.6.1 → 2.8.0`, and `2.8.0` arrives in
+`66081d4` ("Public Release 26/09"), dated 2026-09-10 — before the `v0.2.2`
+(2026-10-01) and `v0.2.3` (2026-10-16) tags, but *newer* than everything else on
+its own axis. The two numbers never referred to the same thing.
+
+Two details are handled so that real packaging tools keep working:
+
+- **A second `+` would be illegal.** PEP 440 allows one local segment. Upstream
+  appended `+<commit>` / `+local`, which on top of `0.2.3+sm110` would produce
+  `0.2.3+sm110+local` — rejected by `packaging.version.parse`. `setup.py` now
+  returns the file's value verbatim, and prints a dirty-tree warning instead of
+  encoding it. Verified: `0.2.3+sm110+abc1234` is invalid, `0.2.3+sm110` is not.
+- **The wheel ships the resolved value.** `CustomBuildPy.copy_version_file()`
+  writes `get_package_version()`'s *result* into `deep_gemm/VERSION` inside the
+  wheel, so `deep_gemm.__version__` equals
+  `importlib.metadata.version('deep_gemm')` for any given install rather than
+  drifting from it.
+
+Verified end to end: `python setup.py --version` → `0.2.3+sm110`,
+`egg_info`'s `PKG-INFO` → `Version: 0.2.3+sm110`, and `build_sgl_deep_gemm.sh`
+→ `0.2.3+sm110`. The wheel's `deep_gemm/__init__.py` is copied from
+`sgl_deep_gemm/__init__.py`, so an already-installed package is untouched.
+
+
+---
+
+## 10. Upstream project
 
 This fork replaces the upstream DeepGEMM README with the page you are reading.
 The original is preserved verbatim at

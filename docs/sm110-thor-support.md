@@ -301,22 +301,28 @@ and the FP4 branch of `enumerate_k_grouped_contiguous` yield cases for any arch.
 Only the test bodies were holding them back, which is why both could be checked
 by removing the guard and keeping the assertions. See §5.1.1.
 
-### 4.1 Two build paths — pick the right one
+### 4.1 Build the SGLang distribution
 
-The repository carries both this fork's packaging (`sgl_deep_gemm/` +
-`build_sgl_deep_gemm.sh`) and upstream's original `setup.py`, and they produce
-**different distributions**:
+The supported installation is `sgl-deep-gemm`, built by
+`bash build_sgl_deep_gemm.sh`; the Python import name is `deep_gemm`.
+Install the resulting wheel using the source-build instructions in README §4.
+Version `0.2.3+sm110` satisfies SGLang's `sgl-deep-gemm==0.2.3` dependency.
 
-| Path | Command | Distribution / version | Notes |
-|---|---|---|---|
-| This fork | `bash build_sgl_deep_gemm.sh` | `sgl-deep-gemm` **0.2.3+sm110** | The supported path; import name is `deep_gemm` |
-| Upstream legacy | `pip install .` | `deep_gemm` **2.8.0** | No SM110 changes; SGLang will not recognise it |
+Do not use root-level `pip install .` for SGLang. Its legacy `setup.py`
+declares a different distribution, `deep_gemm`. Both distributions own files
+under `deep_gemm/`, so installing both can replace shared package files while
+leaving both distribution metadata directories installed. Uninstalling either
+can damage the other. Use only `sgl-deep-gemm` in the SGLang environment.
 
-`2.8.0` comes from `deep_gemm/__init__.py`'s `__version__`, an upstream leftover
-unrelated to the `v0.2.3` tag. `pip install .` succeeds silently, which is what
-makes it a trap: you end up with a `deep_gemm` that SGLang's
-`sgl-deep-gemm==0.2.3` pin does not match and that aborts on SM110 with
-`Unsupported architecture`.
+The legacy build is outside this fork's supported scope. Upstream v0.2.3 has
+both a schema-parser build failure and a pybind11/TORCH_LIBRARY entry-point
+mismatch in that route; fixing it is unnecessary for the SGLang wheel build.
+These failures do not mean the SM110 header changes are absent.
+
+SGLang's local SM110 integration imports `deep_gemm` and queries the compiled
+capability via `supported_arch_majors()` / `supports_arch(...)`, falling back
+to the `sm110` version marker for older builds. This runtime capability check
+is separate from pip's distribution-name dependency check.
 
 ### 4.2 `CUDA_HOME` is required even to import
 
@@ -692,6 +698,9 @@ SGLang edits, with `SGLANG_ENABLE_JIT_DEEPGEMM=1`.
 ## 7. Limitations
 
 - Results are from a single Thor developer kit; no other SM110 part was tested.
+- The `pip install .` path is broken in upstream v0.2.3 itself (two independent
+  defects, §4.1) and is left unfixed here, since fixing upstream's pybind11 /
+  `TORCH_LIBRARY` split is a separate change from SM110 enablement.
 - The SGLang side is not part of this repository, so the pairing between this
   `_C.so` and those two SGLang edits is a documented contract, not something CI
   can enforce.
@@ -712,3 +721,33 @@ SGLang edits, with `SGLANG_ENABLE_JIT_DEEPGEMM=1`.
   §5.6 is the performance result, and it is prefill-only (24 of 36 layers).
 - If upstream adopts this, folding SM110 into an `is_sm100_family`-style
   predicate would be cleaner than enumerating `10 or 11` at 45 sites.
+
+---
+
+## 9. Version handling
+
+`sgl_deep_gemm/VERSION` (`0.2.3+sm110`) is the single source of truth. Both build
+paths read it, so one source tree reports one version:
+
+- `build_sgl_deep_gemm.sh` stages it into the wheel's `deep_gemm/VERSION`,
+  spelled exactly as `setup.py` does, and the staged file is the one
+  `deep_gemm.__version__` reads at runtime.
+- `setup.py`'s `get_public_version()` reads it verbatim and returns it
+  unchanged. Upstream appended a git revision or `+local`; that is dropped,
+  because `0.2.3+sm110+local` has two local segments and is not a legal PEP 440
+  version. A dirty tree is still reported as a warning.
+- `deep_gemm/__init__.py`'s `_read_version()` resolves `VERSION` beside the
+  module, falling back to the sibling `sgl_deep_gemm/VERSION` in a source tree,
+  and to `0.0.0+unknown` if neither exists.
+
+The value it replaces was `__version__ = '2.8.0'`, read by `setup.py` through a
+regex and `ast.literal_eval`. That `2.8.0` belonged to an internal build series,
+not to the `v0.2.x` release tags: its lineage is
+`2.1.1 → 2.2.0 → 2.3.0 → 2.4.2 → 2.5.0 → 2.6.1 → 2.8.0`, with `2.8.0` entering in
+`66081d4` (2026-09-10). Because it was the newest value on that axis, describing
+it as "the original DeepGEMM version" would be wrong.
+
+Verified: `python setup.py --version` and `setup.py egg_info`'s `PKG-INFO` both
+report `0.2.3+sm110`, matching the build script. The supported path is unaffected,
+since its `deep_gemm/__init__.py` is copied from `sgl_deep_gemm/__init__.py`,
+which already read `VERSION`.
