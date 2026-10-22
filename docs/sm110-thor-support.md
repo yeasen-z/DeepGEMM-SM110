@@ -637,6 +637,11 @@ requests, and both backends were measured sequentially rather than interleaved.
 
 ## 6. SGLang integration prerequisite
 
+The companion SGLang SM110 adaptation is maintained in
+[yeasen-z/sglang-inscope](https://github.com/yeasen-z/sglang-inscope).
+Use that repository for the SGLang side and follow its installation instructions;
+this DeepGEMM repository supplies the kernel-library changes.
+
 Routing SM110 into the SM100 kernels is necessary but **not sufficient** for
 SGLang. The SM100 block-FP8 kernels require **UE8M0** (non-negative
 power-of-two) scales, enforced by a device-side trap in the scale-packing

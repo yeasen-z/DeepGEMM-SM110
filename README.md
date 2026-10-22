@@ -123,7 +123,7 @@ python -m sglang.launch_server \
   --dtype bfloat16
 ```
 
-This repository contains the DeepGEMM changes only. The SGLang checkout also needs its SM110-side changes described in [the integration section](docs/sm110-thor-support.md#6-sglang-integration-prerequisite), including the UE8M0 scale gate.
+For the corresponding SGLang SM110 adaptation, use [yeasen-z/sglang-inscope](https://github.com/yeasen-z/sglang-inscope) and follow its installation instructions. This repository contains the DeepGEMM changes only. The SGLang-side integration, including the UE8M0 scale gate, is explained in [the integration section](docs/sm110-thor-support.md#6-sglang-integration-prerequisite).
 
 ## CUDA lookup
 

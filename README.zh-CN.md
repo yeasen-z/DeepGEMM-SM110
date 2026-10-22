@@ -123,7 +123,7 @@ python -m sglang.launch_server \
   --dtype bfloat16
 ```
 
-本仓库只包含 DeepGEMM 的修改。SGLang 仓库还需要配套的 SM110 修改，尤其是 UE8M0 scale 判断，详见[集成说明](docs/sm110-thor-support.md#6-sglang-integration-prerequisite)。
+配套的 SGLang SM110 适配请使用 [yeasen-z/sglang-inscope](https://github.com/yeasen-z/sglang-inscope)，并按该仓库的说明安装。本仓库只包含 DeepGEMM 的修改；SGLang 侧的配套改动（包括 UE8M0 scale 判断）详见[集成说明](docs/sm110-thor-support.md#6-sglang-integration-prerequisite)。
 
 ## CUDA 查找
 
