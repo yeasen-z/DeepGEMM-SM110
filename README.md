@@ -1,240 +1,169 @@
-# DeepGEMM SM110（Jetson AGX Thor）适配
+# DeepGEMM SM110 (Jetson AGX Thor)
 
-让 DeepGEMM 能在 **NVIDIA Jetson AGX Thor**（SM110）上跑起来，供 SGLang 使用。
+**English** | [简体中文](README.zh-CN.md)
 
-- 基线：`sgl-project/DeepGEMM` **v0.2.3**
-- 目标设备：Jetson AGX Thor（`sm_110`，compute capability 11.0）
-- 详细验证记录：[docs/sm110-thor-support.md](docs/sm110-thor-support.md)
-- 上游原始 README（本 fork 替换了首页，原文保留）：[README.upstream.md](README.upstream.md)
+SM110 support for DeepGEMM v0.2.3, for use with SGLang on the NVIDIA Jetson AGX Thor.
 
----
+- Device: NVIDIA Jetson AGX Thor, `sm_110` / compute capability 11.0
+- Distribution: `sgl-deep-gemm==0.2.3+sm110`
+- Python import: `deep_gemm`
+- Detailed verification record: [docs/sm110-thor-support.md](docs/sm110-thor-support.md)
+- Original upstream README: [README.upstream.md](README.upstream.md)
 
-## 1. 改了什么
+## What changed
 
-DeepGEMM 原来只认 SM90 / SM100 / SM120 三种架构。Thor 报的是 **11**，所以任何调用都会在选核之前直接报错：
+Upstream DeepGEMM v0.2.3 did not recognize architecture major 11. Thor therefore stopped with `Unsupported architecture` before selecting a kernel.
 
+This fork:
+
+- adds SM110 to the existing SM100-family host dispatch conditions;
+- updates 45 dispatch checks across 10 host headers;
+- leaves the device kernels, CUTLASS, and JIT compilation logic unchanged;
+- exposes `deep_gemm.supports_arch('sm110')` so SGLang can detect support.
+
+The change reuses the SM100 kernel family already used by DeepGEMM. The detailed file list and test evidence are in the [verification document](docs/sm110-thor-support.md).
+
+## Install
+
+### Requirements
+
+- NVIDIA Jetson AGX Thor or another supported NVIDIA GPU
+- CUDA Toolkit 13.0 or newer, including `nvcc`
+- GCC/G++ 13 with C++20 support
+- PyTorch built for the CUDA version in use
+- `libdw-dev`
+
+On the test machine, the working environment was CUDA 13.0, PyTorch 2.14.1+cu130, GCC 13.3, and Python 3.12.
+
+Install the system dependency if missing:
+
+```bash
+sudo apt-get install -y libdw-dev
 ```
-RuntimeError: Assertion error (csrc/apis/gemm.hpp:225): Unsupported architecture
+
+### Clone
+
+```bash
+git clone https://github.com/yeasen-z/DeepGEMM-thor-sm110.git
+cd DeepGEMM-thor-sm110
 ```
 
-SM110 和 SM100 共用同一套 kernel，所以只需要告诉「调度层」：**SM110 属于 SM100 这一类**。
-
-- 改动范围：**10 个头文件、45 处判断**，只是把 `11` 加进已有的条件里。
-- 设备端代码、CUTLASS、JIT 编译流程**都没动**。
-- 附带加了一个能力查询接口 `deep_gemm.supports_arch('sm110')`，让 SGLang 能自动判断当前装的是不是支持 SM110 的版本（否则它会退回 Triton 后端）。
-
-完整的逐文件改动清单见 [docs/sm110-thor-support.md](docs/sm110-thor-support.md) 第 1 节。
-
----
-
-## 2. 怎么安装
-
-### 2.1 前置条件
-
-| 项目 | 要求 |
-|---|---|
-| GPU | Thor（SM110）。也兼容 SM90 / SM100 |
-| 驱动 / CUDA | 驱动 `595.78`+，CUDA Toolkit **13.0**+（必须有 `nvcc`，运行时 JIT 要用） |
-| 编译器 | g++ 13（需要 C++20） |
-| PyTorch | `2.14.1+cu130` |
-| 系统依赖 | `sudo apt-get install -y libdw-dev` |
-
-### 2.2 拉代码
+The build script downloads the required `cutlass` and `deep_jit` submodules automatically. You may also clone with `--recursive`:
 
 ```bash
 git clone --recursive https://github.com/yeasen-z/DeepGEMM-thor-sm110.git
-cd DeepGEMM-thor-sm110
-
-# 如果忘了加 --recursive
-git submodule update --init --recursive
 ```
 
-两个子模块都必须有：`third-party/cutlass` 和 `third-party/deep_jit`。
+### Build and install
 
-### 2.3 编译并安装
+Activate the environment that will run SGLang first (replace `your-env` with your environment name, or activate your venv). Use the same Python for building and installing:
 
 ```bash
-# 0) 先进入你要安装的目标环境（conda activate / source venv/bin/activate）
 conda activate your-env
-
-# 1) 指定 CUDA
-export CUDA_HOME=/usr/local/cuda          # Thor 上可能是 /home/<user>/cuda_home_thor
-
-# 2) 指定用哪个 Python 编译 —— 必须就是上面这个环境
 export PYTHON_EXE="$(which python)"
 
-# 3) 构建 wheel（脚本会打印它实际使用的解释器和 torch 版本，请核对）
-bash build_sgl_deep_gemm.sh
+# Optional: set this when CUDA is not discoverable automatically.
+# export CUDA_HOME=/usr/local/cuda
 
-# 4) 安装（用同一个环境的 pip）
-pip install --force-reinstall --no-deps dist/sgl_deep_gemm-*.whl
+bash build_sgl_deep_gemm.sh
+"$PYTHON_EXE" -m pip install --force-reinstall --no-deps dist/sgl_deep_gemm-*.whl
 ```
 
-> 第 0 步不能跳过：`pip install` 用的是当前环境的 pip。如果你只 `export PYTHON_EXE`
-> 而没激活环境，编译和安装可能落到两个不同的环境里，装完 import 会失败。
+The build script prints the Python and PyTorch versions it uses. Check that they are the versions in your target environment.
 
-装出来的包名是 **`sgl-deep-gemm`**，版本 **`0.2.3+sm110`**，导入名仍然是 `deep_gemm`（SGLang 的代码不用改）。
+### Verify
 
-`0.2.3+sm110` 满足 SGLang 的依赖 `sgl-deep-gemm==0.2.3`，所以不影响 SGLang 安装依赖。
-
-### 2.4 验证装好了
-
-**在代码目录外面执行**（否则会 import 到源码目录而不是装好的包）：
+Run the check outside the source directory, so Python does not import the checkout instead of the installed package:
 
 ```bash
 cd /tmp
 python -c "
 import deep_gemm, torch
-print('version  :', deep_gemm.__version__)
-print('capability:', torch.cuda.get_device_capability())
-print('supports sm110:', deep_gemm.supports_arch('sm110'))
-a = torch.randn(4096, 4096, dtype=torch.bfloat16, device='cuda')
-b = torch.randn(4096, 4096, dtype=torch.bfloat16, device='cuda')
-d = torch.empty(4096, 4096, dtype=torch.bfloat16, device='cuda')
-deep_gemm.bf16_gemm_nt(a, b, d)
-print('GEMM OK', float(d.abs().mean()))
+print('version:', deep_gemm.__version__)
+print('device :', torch.cuda.get_device_capability())
+print('SM110  :', deep_gemm.supports_arch('sm110'))
+a = torch.randn(128, 128, device='cuda', dtype=torch.bfloat16)
+b = torch.randn(128, 128, device='cuda', dtype=torch.bfloat16)
+c = torch.empty(128, 128, device='cuda', dtype=torch.bfloat16)
+deep_gemm.bf16_gemm_nt(a, b, c)
+torch.cuda.synchronize()
+print('GEMM   : OK')
 "
 ```
 
-Thor 上正常应该输出：
+Expected on Thor:
 
-```
-version  : 0.2.3+sm110
-capability: (11, 0)
-supports sm110: True
-GEMM OK 51.0
+```text
+version: 0.2.3+sm110
+device : (11, 0)
+SM110  : True
+GEMM   : OK
 ```
 
-一条命令做全面体检：
+For a broader diagnostic:
 
 ```bash
 python -m deep_gemm.doctor
 ```
 
----
+The installed version `0.2.3+sm110` satisfies SGLang's `sgl-deep-gemm==0.2.3` dependency.
 
-## 3. 怎么配置
-
-### 3.1 SGLang 环境变量
+## Configure SGLang
 
 ```bash
-export CUDA_HOME=/usr/local/cuda
 export SGLANG_ENABLE_JIT_DEEPGEMM=1
-
-python -m sglang.launch_server \
-    --model-path Qwen/Qwen3-8B-FP8 \
-    --fp8-gemm-backend deep_gemm \
-    --dtype bfloat16
 ```
 
-### 3.2 SGLang 侧还需要两处改动
-
-**下面的改动在 SGLang 仓库里，不在本仓库。** SM100 的 FP8 kernel 要求权重 scale 是 UE8M0 格式，而 SGLang 的设备判断没包含 SM110，不改的话会直接 trap（`CUDA_ERROR_LAUNCH_FAILED`）：
-
-```python
-# 1. configurer.py —— 把 SM110 加进去
-DEEPGEMM_SCALE_UE8M0 = ENABLE_JIT_DEEPGEMM and (
-    get_platform().is_sm100 or get_device_sm() in (110, 120, 121)
-)
-
-# 2. fp8_utils.py —— 只在真的不支持时才退回 triton
-elif (
-    backend == "auto"
-    and get_platform().is_sm110
-    and not deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0
-):
-    backend = "triton"
-```
-
-改动前后对比和原理见 [docs/sm110-thor-support.md](docs/sm110-thor-support.md) 第 6 节。
-
-### 3.3 JIT 缓存（可选）
-
-kernel 第一次用到时会现场编译并缓存。默认缓存在 `$HOME/.dj`，想换个地方：
+For FP8 models, use the DeepGEMM backend when appropriate:
 
 ```bash
-export DG_JIT_CACHE_DIR=/var/cache/deepgemm:/opt/deepgemm-baked
+python -m sglang.launch_server \
+  --model-path Qwen/Qwen3-8B-FP8 \
+  --fp8-gemm-backend deep_gemm \
+  --dtype bfloat16
 ```
 
-冒号分隔：**第一个是写入目录，后面的是只读查找目录**（适合在镜像里预烤一份缓存）。
+This repository contains the DeepGEMM changes only. The SGLang checkout also needs its SM110-side changes described in [the integration section](docs/sm110-thor-support.md#6-sglang-integration-prerequisite), including the UE8M0 scale gate.
 
----
+## CUDA lookup
 
-## 4. 注意事项
+You do **not** always need to set `CUDA_HOME`. DeepGEMM looks for CUDA in this order:
 
-1. **不要用 `pip install .`。**
-   仓库根目录的 `setup.py` 是上游留下的老入口，在 v0.2.3 上本身就是坏的（构建会失败）。给 SGLang 用一律走 `bash build_sgl_deep_gemm.sh`。
+1. `CUDA_HOME` or `CUDA_PATH`;
+2. `nvcc` on `PATH`;
+3. `/usr/local/cuda`.
 
-2. **不要同时安装 `sgl-deep-gemm` 和 `deep_gemm` 两个包。**
-   它们发行名不同，但会往同一个 `deep_gemm/` 目录写文件，可能互相覆盖；卸载其中一个可能破坏另一个。
+Set it when CUDA is installed in a non-standard location, when several CUDA versions are installed, or when automatic detection fails:
 
-3. **编译用的 Python 必须和安装用的环境一致。**
-   编译产物和 torch 的 C++ ABI 绑定，torch 2.13 和 2.14 不兼容。`build_sgl_deep_gemm.sh` 会打印它用的是哪个解释器，请确认一下；最稳妥的是显式设置 `PYTHON_EXE`。
+```bash
+export CUDA_HOME=/path/to/cuda
+```
 
-4. **不要用 md5 / 哈希去判断装的是不是补丁版。**
-   编译产物里嵌了源码的绝对路径，同样的源码在不同目录构建出来的文件哈希不同。用第 2.4 节的运行时验证来判断。
+The selected CUDA installation must provide `bin/nvcc` and the device headers needed by the runtime JIT. The first kernel use may take longer because the kernel is compiled and cached. The default cache is `$HOME/.dj`; override it with `DG_JIT_CACHE_DIR` if needed.
 
-5. **第一次跑会很慢，这是正常的。**
-   kernel 按「形状 + 选项」逐个编译，缓存一次之后就不慢了。SGLang 场景可以预热：`python -m sglang.compile_deep_gemm`。
+## Important notes
 
-6. **`CUDA_HOME` 必须设置。**
-   连 `import deep_gemm` 都需要它，因为运行时要用 `nvcc` 现场编译 kernel。如果报错找不到 CUDA，看 [docs/sm110-thor-support.md](docs/sm110-thor-support.md) 第 4.2 节。
+1. **Use the SGLang wheel path above.** Do not use the repository-root `pip install .` path for SGLang.
+2. **Do not install both `sgl-deep-gemm` and a separate `deep_gemm` distribution.** They use the same Python package directory and can overwrite each other.
+3. Use the same Python environment for building, installing, and running SGLang. The extension is tied to the PyTorch/CUDA environment.
+4. The first run may be slow while JIT kernels are compiled. Later runs use the cache.
+5. This fork does not provide a universal prebuilt binary. Build on the target machine.
+6. The tested device was one Jetson AGX Thor. Mega MoE/Gate/mHC and dense or m-grouped FP4 paths were not covered by the recorded tests.
 
-7. **本仓库不提供预编译二进制。**
-   需要你在自己的机器上编译。因为编译产物和 **CPU 架构 + torch 版本 + CUDA 大版本** 三者严格绑定，传给你的文件在别的机器上装不上。
+## Test summary
 
-### 还没验证的部分
+On the Jetson AGX Thor test machine:
 
-以下路径本次**没有测试**，要用的话请自行验证：
+- BF16, FP8, layout, attention, einsum, and hyperconnection tests completed without failures.
+- Unguarded k-grouped FP4: 189/189 passed.
+- Unguarded psum layout: 224/224 passed.
+- SGLang with Qwen3-8B-FP8 produced correct text.
+- Steady-state prefill throughput: 5,331 tok/s with DeepGEMM vs 3,639 tok/s with Triton on the same workload (1.47x).
 
-- Mega MoE、Mega Gate、Mega mHC（它们的参考实现需要 TileKernels / TileLang，本机没装）
-- dense / m-grouped 的 FP4
+The performance comparison covers prefill only: 24 of 36 model layers, 41 requests, and 1,440,227 tokens. It is not a whole-model or decode benchmark.
 
-已充分验证的：BF16 和 FP8 的 dense / grouped GEMM、SF layout、k-grouped FP4、psum、attention、einsum、hyperconnection，以及 `Qwen3-8B-FP8` 端到端推理。
+See [docs/sm110-thor-support.md](docs/sm110-thor-support.md) for the full test device, commands, limitations, and measurements.
 
----
+## Upstream
 
-## 5. 测试设备
-
-所有结果都来自下面这台机器：
-
-| 项目 | 值 |
-|---|---|
-| 板卡 | NVIDIA Jetson AGX Thor Developer Kit（Tegra, aarch64） |
-| GPU | `NVIDIA Thor`，compute capability **11.0**（`sm_110`），20 SM，128 GB 统一内存 |
-| L4T / 内核 | R39 (release 2.0)，`6.8.12-1021-tegra` |
-| 系统 | Ubuntu 24.04.4 LTS，14 核 |
-| 驱动 | `595.78` |
-| CUDA | **13.0**（`nvcc` V13.0.88） |
-| 编译器 | GCC/G++ 13.3.0 |
-| PyTorch | `2.14.1+cu130` |
-| Python | conda 环境 `inscope`，Python 3.12 |
-
-### 验证结果概览
-
-| 测试 | 用例数 | 结果 |
-|---|---:|---|
-| `test_bf16.py` | 449 | 0 失败 |
-| `test_fp8_fp4.py` | 353 | 0 失败 |
-| `test_layout.py` | 272 | 0 失败 |
-| FP4 k-grouped（单独跑） | 189 | 0 失败 |
-| psum SF layout（单独跑） | 224 | 0 失败 |
-| `test_attention.py` / `test_einsum.py` / `test_hyperconnection.py` | 88 | 0 失败 |
-| SGLang + `Qwen3-8B-FP8` 端到端 | 4 prompts | 文本正确 |
-
-性能（SGLang 实测，同样 41 个请求 / 144 万 token，prefill 阶段）：
-
-| 分组 | DeepGEMM | Triton | 提升 |
-|---|---:|---:|---:|
-| 全部 | **5,331 tok/s** | 3,639 tok/s | **1.47x** |
-| ~4k 短请求 | **12,018 tok/s** | 5,428 tok/s | **2.21x** |
-| ~64k 长请求 | **5,165 tok/s** | 3,571 tok/s | **1.45x** |
-
-> 说明：这是 prefill 阶段、24/36 层的对比（两者条件完全一致，所以比值有效）。完整数据和方法见 [docs/sm110-thor-support.md](docs/sm110-thor-support.md) 第 5.6 节。
-
----
-
-## 6. 上游项目
-
-本 fork 替换了首页，上游原始 README 原文保留在 [README.upstream.md](README.upstream.md)。
-上游项目：[sgl-project/DeepGEMM](https://github.com/sgl-project/DeepGEMM)。
+This fork is based on [sgl-project/DeepGEMM](https://github.com/sgl-project/DeepGEMM) v0.2.3. The original README is preserved in [README.upstream.md](README.upstream.md).
