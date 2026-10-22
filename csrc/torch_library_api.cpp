@@ -24,6 +24,7 @@
 #include "apis/mega_gate.hpp"
 #include "apis/mega_mhc.hpp"
 #include "apis/sm90_mega.hpp"
+#include "utils/arch.hpp"
 
 using namespace deep_gemm;
 using torch::Tensor;
@@ -81,6 +82,12 @@ bool dg_get_deterministic_algorithms() { return heuristics_runtime->get_determin
 void dg_set_ignore_compile_dims(bool v) { heuristics_runtime->set_ignore_compile_dims(v); }
 void dg_set_block_size_multiple_of(int64_t m, int64_t n) {
     heuristics_runtime->set_block_size_multiple_of(static_cast<int>(m), static_cast<int>(n));
+}
+
+// Reported before any CUDA context exists, so it is a plain constant rather
+// than a device query. See csrc/utils/arch.hpp.
+std::vector<int64_t> dg_supported_arch_majors() {
+    return {arch::kSupportedArchMajors.begin(), arch::kSupportedArchMajors.end()};
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +673,8 @@ c10::Dict<std::string, int64_t> dg_get_bf16_mega_gate_config(int64_t num_tokens,
 TORCH_LIBRARY(deep_gemm, m) {
     // Runtime and config (catch-all: no tensor arguments to dispatch on)
     m.def("init(str library_root_path, str cuda_home) -> ()", &dg_init);
+    // Answerable without a CUDA context: which arch majors this binary accepts.
+    m.def("supported_arch_majors() -> int[]", &dg_supported_arch_majors);
     m.def("get_num_sms() -> int", &dg_get_num_sms);
     m.def("set_num_sms(int new_num_sms) -> ()", &dg_set_num_sms);
     m.def("get_tc_util() -> int", &dg_get_tc_util);

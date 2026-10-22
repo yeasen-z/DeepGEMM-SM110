@@ -172,15 +172,12 @@ is still `deep_gemm`.
 | PyTorch | `2.14.1+cu130` |
 | Python env | conda env `inscope`, Python 3.12 |
 | DeepGEMM base | `v0.2.3` (`e6f9bd6`) |
-| Patched `_C.so` md5 | `66e8ee99e3c3ae7425b42713766a6e4a` (this build only — see below) |
-| Stock `_C.so` md5 | `ab82a63b329f5366c04ec1a0244402a9` |
 
-> **The md5s identify these particular builds, not the patch.** `_C.so` embeds
+> **No hash of `_C.so` is recorded here, and none should be.** The binary embeds
 > the absolute path of the sources it was compiled from, so the same sources
-> built in a different directory give a different hash: a fresh clone built from
-> `/tmp/sm110_fresh` produced `515dea727c68e77b6b247d88188b3aff` from a binary of
-> identical size (2,045,576 bytes). A library you build yourself will not match
-> the values above; compare behaviour instead (§5.3).
+> built in a different directory produce a binary of identical size that differs
+> only in that embedded path — and therefore in its hash. A library you build
+> yourself will never match someone else's; compare behaviour instead (§5.3).
 
 The JIT compiles at run time with `--gpu-architecture=sm_110f`, which is what
 DeepJIT derives from major/minor 11/0.
@@ -208,7 +205,8 @@ against one cannot be imported under the other, which is why:
 
 * building it yourself is the supported path (the runtime JIT already needs a
   CUDA toolchain, so this adds no new requirement), and
-* an md5 comparison against our binary is meaningless — see the note above.
+* an md5 comparison against someone else's binary is meaningless — see the note
+  in §3.1.
 
 `build_sgl_deep_gemm.sh` therefore selects its interpreter explicitly
 (`PYTHON_EXE="${PYTHON_EXE:-$(which python3 || which python)}"`), prints the
@@ -247,9 +245,13 @@ python -u test_fp8_fp4.py
 python -u test_layout.py
 ```
 
-The `sgl_deep_gemm/tests/` copies are the ones used here; the 14 files under the
-repository-root `tests/` are largely the same tests plus additional Mega MoE
-variants (Hopper/TRT-LLM/SiTU coverage) that need extra dependencies.
+Everything here was run from `sgl_deep_gemm/tests/`, which is the superset: it
+contains all 14 files of the repository-root `tests/` plus 13 more Mega MoE /
+TRT-LLM / SiTU variants that need extra dependencies (TileKernels, TileLang,
+DeepEP). The shared files are newer there as well — they are the copies that
+carry the SM120 `skip:` guards and the `test_bf16_repeatability` /
+`test_sm90_block32` entry points.
+
 `test_bf16.py` covers dense, m-grouped (contiguous and masked) and k-grouped
 BF16 by sweeping shapes and asserting `calc_diff(d, ref_d) < 1e-5` against a
 cuBLAS reference; `test_fp8_fp4.py` does the same for FP8/FP4 with
@@ -258,6 +260,73 @@ pack/transpose kernels for bit-exactness.
 
 A `Perf (...)` line is emitted only after that shape's assertion has passed, so
 the number of `Perf` lines is a direct progress/completeness signal.
+
+### 4.1 Two build paths — pick the right one
+
+The repository carries both this fork's packaging (`sgl_deep_gemm/` +
+`build_sgl_deep_gemm.sh`) and upstream's original `setup.py`, and they produce
+**different distributions**:
+
+| Path | Command | Distribution / version | Notes |
+|---|---|---|---|
+| This fork | `bash build_sgl_deep_gemm.sh` | `sgl-deep-gemm` **0.2.3+sm110** | The supported path; import name is `deep_gemm` |
+| Upstream legacy | `pip install .` | `deep_gemm` **2.8.0** | No SM110 changes; SGLang will not recognise it |
+
+`2.8.0` comes from `deep_gemm/__init__.py`'s `__version__`, an upstream leftover
+unrelated to the `v0.2.3` tag. `pip install .` succeeds silently, which is what
+makes it a trap: you end up with a `deep_gemm` that SGLang's
+`sgl-deep-gemm==0.2.3` pin does not match and that aborts on SM110 with
+`Unsupported architecture`.
+
+### 4.2 `CUDA_HOME` is required even to import
+
+`import deep_gemm` resolves a CUDA install at module-import time, because the
+kernels are compiled by a JIT at run time. If no `CUDA_HOME`/`CUDA_PATH` is set,
+no `nvcc` is on `PATH`, and `/usr/local/cuda` does not exist, the import fails.
+This fork raises a `RuntimeError` that names the two directories you actually
+need:
+
+```
+RuntimeError: Cannot locate a CUDA installation.
+  ...
+  Point CUDA_HOME at a directory that contains both of:
+
+    <CUDA_HOME>/bin/nvcc                  the CUDA compiler
+    <CUDA_HOME>/include/curand_kernel.h   the CUDA device headers
+
+  On Jetson these are sometimes split across two prefixes. Either point
+  CUDA_HOME at a directory that holds both (a symlink farm is fine), or
+  add the device-header directory to CPATH.
+```
+
+### 4.3 Ask the build what it supports
+
+The Python files and `_C.so` are installed separately and can disagree. The
+capability query is therefore answered by the compiled binary
+(`csrc/utils/arch.hpp` → `csrc/torch_library_api.cpp`), not by Python:
+
+```python
+import deep_gemm
+deep_gemm.supported_arch_majors()   # (9, 10, 11, 12)
+deep_gemm.supports_arch('sm110')    # True
+```
+
+It works without a CUDA context, so it can be called during import — which is
+when frameworks decide whether to enable, for example, the UE8M0 FP8 scale path.
+On a stock upstream `_C.so` the symbol does not exist and the call raises
+`AttributeError` rather than returning a misleading `True`.
+
+### 4.4 Diagnosing an install
+
+```bash
+python -m deep_gemm.doctor
+```
+
+Reports version, `_C.so` path/size/build time, CUDA home, `nvcc`, the device
+header, torch, the supported arch set, the device, the JIT cache location and
+entry count, and finally runs one 128×128×128 bf16 GEMM through the dispatcher.
+Exits non-zero on a real problem. It deliberately does **not** print a hash of
+`_C.so` — see §3.1.
 
 ---
 

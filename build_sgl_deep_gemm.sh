@@ -61,6 +61,74 @@ if [[ ! -f "setup.py" || ! -d "sgl_deep_gemm" || ! -d "deep_gemm" || ! -d "csrc"
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# CUDA prerequisites. Checked up front so a misconfigured toolkit surfaces as
+# an instruction rather than as a strange `nvcc` or linker error much later.
+# ---------------------------------------------------------------------------
+echo "--- CUDA toolchain ---"
+
+CUDA_HOME_RESOLVED="$("$PYTHON_EXE" - <<'PY'
+import os, shutil, sys
+from pathlib import Path
+home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+if not home:
+    nvcc = shutil.which("nvcc")
+    home = str(Path(nvcc).parent.parent) if nvcc else "/usr/local/cuda"
+print(home)
+PY
+)" || { echo "Error: could not determine a CUDA home." >&2; exit 1; }
+
+if [[ ! -d "$CUDA_HOME_RESOLVED" ]]; then
+    cat >&2 <<EOF
+Error: CUDA_HOME resolves to '$CUDA_HOME_RESOLVED', which is not a directory.
+
+  export CUDA_HOME=/path/to/cuda        # must contain bin/nvcc
+EOF
+    exit 1
+fi
+echo "CUDA_HOME: $CUDA_HOME_RESOLVED"
+
+if [[ ! -x "${CUDA_HOME_RESOLVED}/bin/nvcc" ]]; then
+    cat >&2 <<EOF
+Error: no executable 'nvcc' at ${CUDA_HOME_RESOLVED}/bin/nvcc.
+
+  DeepGEMM compiles its host layer and JITs its kernels, so a full CUDA
+  toolkit is required (a runtime-only install is not enough).
+
+  export CUDA_HOME=/path/to/cuda        # the one with bin/nvcc
+EOF
+    exit 1
+fi
+echo "nvcc      : $("${CUDA_HOME_RESOLVED}/bin/nvcc" --version | tail -1)"
+
+# SM110 is only accepted by CUDA 12.9+. Catch a toolkit that is too old here,
+# where the message can still name the real problem.
+if ! "${CUDA_HOME_RESOLVED}/bin/nvcc" --list-gpu-arch 2>/dev/null | grep -q 'compute_11[0-9]'; then
+    cat >&2 <<EOF
+Warning: ${CUDA_HOME_RESOLVED}/bin/nvcc does not list compute_110 among its
+         supported architectures. Building for SM110 (Jetson Thor) needs
+         CUDA 12.9 or newer; older toolkits will fail on the device code.
+         Continuing anyway -- ignore this if you are targeting SM90/SM100.
+EOF
+fi
+
+# The runtime JIT needs the CUDA *device* headers (curand_kernel.h etc.).
+# On Jetson these are sometimes installed to a different prefix than nvcc.
+if [[ ! -f "${CUDA_HOME_RESOLVED}/include/curand_kernel.h" ]]; then
+    cat >&2 <<EOF
+Warning: ${CUDA_HOME_RESOLVED}/include/curand_kernel.h is missing.
+
+  The host layer will build, but the runtime JIT needs the CUDA device
+  headers and will fail later with a confusing compile error. Fix one of:
+
+    * point CUDA_HOME at a prefix that has BOTH bin/nvcc and include/
+      (a symlink farm combining the two is fine), or
+    * add the device-header directory to CPATH:
+        export CPATH=/path/to/cuda/include:\$CPATH
+EOF
+fi
+echo "headers   : $([[ -f "${CUDA_HOME_RESOLVED}/include/curand_kernel.h" ]] && echo present || echo MISSING)"
+
 echo "--- Initialising submodules ---"
 git submodule update --init --recursive
 
@@ -73,7 +141,8 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$PKG_DIR"
 
 cp sgl_deep_gemm/LICENSE sgl_deep_gemm/README.md sgl_deep_gemm/pyproject.toml "$BUILD_DIR/"
-cp sgl_deep_gemm/__init__.py sgl_deep_gemm/cuda_helpers.py sgl_deep_gemm/build_ext.py "$PKG_DIR/"
+cp sgl_deep_gemm/__init__.py sgl_deep_gemm/cuda_helpers.py sgl_deep_gemm/build_ext.py \
+   sgl_deep_gemm/doctor.py "$PKG_DIR/"
 
 # `__init__.py` imports `.utils`, `.testing`, `.legacy`, `.mega` — pulled from
 # the existing deep_gemm/ tree.

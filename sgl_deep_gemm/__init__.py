@@ -46,6 +46,52 @@ def _load_module() -> _TorchOps:
 _C = _load_module()
 
 # ---------------------------------------------------------------------------
+# Capability query
+# ---------------------------------------------------------------------------
+def supported_arch_majors():
+    """CUDA architecture majors this installed ``_C.so`` accepts, e.g. ``(9, 10, 11, 12)``.
+
+    Reads the answer from the compiled binary rather than from the Python
+    package, so a stale ``_C.so`` under a fresh Python side reports what it can
+    actually do. Cheap and side-effect free: safe to call at import time, before
+    any CUDA context exists.
+    """
+    return tuple(_C.supported_arch_majors())
+
+
+def _arch_major(arch) -> int:
+    """Normalise an architecture to its major number.
+
+    Accepts a major (``11``), a ``sm``-style identifier (``'sm110'``, ``'sm_110'``,
+    ``90``) or a CUDA-style number (``110``). Anything ``>= 90`` is read as
+    major-and-minor (``90 -> 9``, ``100 -> 10``, ``110 -> 11``); smaller values
+    are already majors.
+    """
+    if isinstance(arch, str):
+        value = arch.strip().lower()
+        if value.startswith('sm'):
+            value = value[2:]
+        value = value.lstrip('_')
+        if not value.isdigit():
+            raise ValueError(f'unrecognised architecture {arch!r}; expected e.g. "sm110", "sm_110" or 11')
+        number = int(value)
+    elif isinstance(arch, int):
+        number = arch
+    else:
+        raise TypeError(f'architecture must be an int or a str, got {type(arch).__name__}')
+    return number // 10 if number >= 90 else number
+
+
+def supports_arch(arch) -> bool:
+    """Whether this build accepts ``arch``, given as an int or an ``sm``-style name.
+
+    ``supports_arch('sm110')`` / ``supports_arch('sm_110')`` / ``supports_arch(110)``
+    / ``supports_arch(11)`` all ask the same question: is SM110 a supported
+    architecture major here?
+    """
+    return _arch_major(arch) in supported_arch_majors()
+
+# ---------------------------------------------------------------------------
 # Runtime config
 # ---------------------------------------------------------------------------
 set_num_sms = _C.set_num_sms

@@ -8,9 +8,28 @@ record of exactly how far that support has been verified.
 - **Implementation**: a single commit, [`db919b4`](https://github.com/yeasen-z/DeepGEMM-SM110/commit/db919b4) — 45 sites in 10 host headers
 - **Full diff vs upstream v0.2.3**: [`e6f9bd6...main`](https://github.com/yeasen-z/DeepGEMM-SM110/compare/e6f9bd6...main)
 - **All changes in this fork**: [`1853080...main`](https://github.com/yeasen-z/DeepGEMM-SM110/compare/1853080...main)
-- **Patched artifact**: `deep_gemm/_C.so` — this fork changes **host code only**, and `_C.so` embeds its build-time source path, so its md5 identifies *one particular build* (ours: `66e8ee99…`), not the patch. Verify your own build behaviourally, with §4.5.
+- **Patched artifact**: `deep_gemm/_C.so` — this fork ships **no prebuilt binary**, on purpose: `_C.so` is tied to your CPU arch, your torch C++ ABI and your CUDA major, and it embeds its build-time source path, so no single binary is portable. Build it yourself (§4.4) and verify it behaviourally (§4.5).
 - **Full write-up**: [docs/sm110-thor-support.md](docs/sm110-thor-support.md)
 - **Upstream README** (this fork replaced it, kept for reference): [README.upstream.md](README.upstream.md)
+
+> ### If you are here to serve SGLang: use `build_sgl_deep_gemm.sh`
+>
+> This repo has **two build paths that produce different packages**, and picking
+> the wrong one wastes an afternoon:
+>
+> | Path | Command | Produces | Use it for |
+> |---|---|---|---|
+> | **SGLang / this fork's support** | `bash build_sgl_deep_gemm.sh` | `sgl-deep-gemm` **0.2.3+sm110**, import name `deep_gemm` | **Everything in this README.** This is the supported path. |
+> | Upstream legacy | `pip install .` (runs `setup.py`) | `deep_gemm` **2.8.0** | Nothing on SM110. It is DeepGEMM's original build, kept for upstream compatibility. |
+>
+> `pip install .` does **not** fail — it happily installs a `deep_gemm 2.8.0`
+> that has none of the SM110 changes and that SGLang's `sgl-deep-gemm==0.2.3`
+> pin will not recognise. If you already did that, `pip uninstall deep_gemm`
+> first, then follow §4.4.
+>
+> (`2.8.0` is not a typo: upstream v0.2.3's `deep_gemm/__init__.py` carries
+> `__version__ = '2.8.0'`, a leftover from its own tagging. Only
+> `sgl_deep_gemm/VERSION` describes this fork's package.)
 
 ---
 
@@ -232,8 +251,7 @@ with no CPython dependency. **Two supported routes:**
 > itself (`inscope` → 2.14.1, `prefillbench-thor` → 2.13.0), which is exactly
 > why this is easy to get wrong. Since the runtime JIT already requires a CUDA
 > toolchain on the target machine, building the host layer adds no new
-> requirement. Building also avoids the checksum trap described below: a
-> self-built `_C.so` legitimately has a different md5 from ours.
+> requirement. Building also avoids the checksum trap described below.
 
 **Route A — build a wheel.** `build_sgl_deep_gemm.sh` initialises the
 submodules, links the CUTLASS headers into `deep_gemm/include`, stages the
@@ -294,18 +312,17 @@ If you rebuild at a different version, the remaining options are:
    Note this replaces the binary only; if you also need the Python-side changes
    from a newer revision, this route will not bring them.
 
-> **Don't use the md5 to recognise the patch.** `_C.so` embeds the absolute path
-> of the sources it was compiled from (the assertion messages reference them, and
-> they are visible via `strings`). Two builds of byte-identical sources in
-> different directories therefore produce **different** md5s — we measured
-> 2,045,576-byte binaries that differ only in that embedded path and hash as
-> `66e8ee99…` (built in the source tree) vs `515dea72…` (built in a fresh clone).
-> A build you make yourself will not reproduce our md5, so an md5 mismatch is not
-> evidence of a bad build. Use the behavioural check in §4.5 instead: `bf16_gemm_nt`
-> must run, and the stock library must fail with `Unsupported architecture`.
+> **Don't try to recognise the patch by hashing `_C.so`.** The binary embeds the
+> absolute path of the sources it was compiled from (the assertion messages
+> reference them, and they are visible via `strings`). Two builds of
+> byte-identical sources in different directories therefore produce **different**
+> binaries of identical size, differing only in that embedded path. A hash you
+> compute yourself will not match anyone else's, so a mismatch is not evidence of
+> a bad build. Use the behavioural check in §4.5 instead: `bf16_gemm_nt` must
+> run, and the stock library must fail with `Unsupported architecture`.
 
 Whichever route you use, confirm you really got the patched build — do it
-behaviourally, as in §4.5, not by md5 (see the note above).
+behaviourally, as in §4.5.
 
 **Route B — compile `_C.so` in place.** Faster when iterating on `csrc/`;
 you compile straight over the installed extension:
@@ -342,13 +359,22 @@ cp "$SP/_C.so" "$SP/_C.so.orig"
 > ln -sfn "$PWD/third-party/cutlass/include/cute"    deep_gemm/include/cute
 > ```
 
-### 4.5 Verify the patch is actually live
+### 4.5 Verify the build is live
 
-`get_arch_major()` must return **11** and the extension must expose the SM100
-routing path. The strongest quick check is a real kernel launch (run it inside
-the Python environment that has both `torch` and `deep_gemm` installed):
+**Run this from outside the source tree.** The repo root contains a `deep_gemm/`
+source directory, and Python prefers the current directory over `site-packages`.
+Run the snippet from inside the clone and you import the *source tree*, which has
+no compiled `_C.so`, so you get:
+
+```
+ImportError: DeepGEMM extension is missing; build the TORCH_LIBRARY _C module first.
+```
+
+That is not a failed install — it is the wrong `sys.path`. `cd` somewhere else
+(simplest), or use the doctor command in §4.7, which reports where it loaded from.
 
 ```bash
+cd /tmp   # or anywhere outside the clone
 python -c "
 import torch, deep_gemm
 print('cap', torch.cuda.get_device_capability())
@@ -372,14 +398,97 @@ With the stock `_C.so` this dies with
 
 That runtime difference — not a checksum — is the reliable way to tell the two
 apart. `_C.so` embeds the absolute path of the sources it was built from (the
-assertion messages point at them), so its md5 changes with the build directory:
-the binary in this environment hashes as `66e8ee99e3c3ae7425b42713766a6e4a`
-(path `/home/becool/Workspace/zmosg/src/DeepGEMM`, the stock one as
-`ab82a63b329f5366c04ec1a0244402a9`), while a byte-identical build from a fresh
-clone (`/tmp/sm110_fresh`) hashes as `515dea727c68e77b6b247d88188b3aff`. A
-self-built library will legitimately differ.
+assertion messages point at them), so any hash of it changes with the build
+directory even when the sources are byte-identical.
 
-### 4.6 Run the test suites
+### 4.6 Ask the build what it supports
+
+The Python side and `_C.so` are installed separately, so they can disagree —
+typically when the wheel's Python files are current but the extension is stale.
+A capability query answered by the **Python** package would lie in exactly that
+case, so the answer comes from the compiled binary:
+
+```python
+import deep_gemm
+deep_gemm.supported_arch_majors()   # -> (9, 10, 11, 12)
+deep_gemm.supports_arch('sm110')    # -> True
+deep_gemm.supports_arch(11)         # -> True
+deep_gemm.supports_arch('sm90')     # -> True
+deep_gemm.supports_arch('sm80')     # -> False
+```
+
+`supports_arch` accepts a major (`11`), a CUDA-style number (`110`) or an
+`sm`-style name (`'sm110'`, `'sm_110'`). This is safe to call at **import time**,
+before any CUDA context exists — which is what frameworks need, because choices
+like "enable the UE8M0 FP8 scale path" are made before the model loads.
+
+A stock upstream `_C.so` has no such symbol, so the call raises `AttributeError`
+instead of returning a wrong `True`. That asymmetry is the point.
+
+### 4.7 Diagnose an install: `python -m deep_gemm.doctor`
+
+One command, everything needed to explain a broken install, with a non-zero exit
+code when something is actually wrong:
+
+```
+$ python -m deep_gemm.doctor
+DeepGEMM doctor
+============================================================
+version               : 0.2.3+sm110
+package               : .../site-packages/deep_gemm
+_C.so                 : .../deep_gemm/_C.so (2,057,928 bytes, built 2026-10-22 12:04)  [ok]
+CUDA_HOME             : /path/to/cuda  [ok]
+nvcc                  : /path/to/cuda/bin/nvcc  [ok]
+device headers        : /path/to/cuda/include/curand_kernel.h  [ok]
+torch                 : 2.14.1+cu130 (cuda 13.0)  [ok]
+supported arch majors : sm9, sm10, sm11, sm12  [ok]
+device                : NVIDIA Thor, sm_110 (compute capability 11.0), 20 SMs  [ok]
+arch check            : sm11 is supported by this build  [ok]
+JIT cache             : /home/user/.dj  (default; set DG_JIT_CACHE_DIR to move)
+JIT cached kernels    : 37 entries in /home/user/.dj/cache
+
+running a 128x128x128 bf16 GEMM through the dispatcher ...
+dispatch              : bf16_gemm_nt ran, max|diff| vs fp32 ref = 0.0000  [ok]
+============================================================
+
+RESULT: OK
+```
+
+It reports the `_C.so` **path, size and build time** but never a hash: the
+binary embeds its build-time source path, so a hash differs between
+byte-identical builds and only produces false alarms.
+
+### 4.8 Environment variables and the JIT cache
+
+The runtime JIT compiles kernels on first use and caches the resulting cubins.
+DeepGEMM's variable prefix is `DG`; unset variables fall back to the global
+`DJ_` prefix, and then to the built-in default.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DG_JIT_CACHE_DIR` | `$HOME/.dj` | Where compiled kernels are cached |
+| `DJ_JIT_CACHE_DIR` | — | Global fallback if the `DG_` form is unset |
+| `CUDA_HOME` | — | Required, even to `import deep_gemm` |
+
+`DG_JIT_CACHE_DIR` accepts **colon-separated paths**. The **first is the writable
+root**; the rest are **read-only lookup roots**:
+
+```bash
+export DG_JIT_CACHE_DIR=/var/cache/deepgemm:/opt/deepgemm-baked
+```
+
+A kernel is looked up in every root in order, so a container image can bake a
+warm cache into `/opt/deepgemm-baked` and still let each run write new kernels to
+the writable root. Layout is `<root>/cache/<family>.<hash>/`.
+
+**First run is slow, and that is expected.** The cache is per (kernel, shape,
+option) combination, so warm-up cost scales with how many shapes you touch — a
+serving stack that pre-warms thousands of `M` values can spend minutes compiling
+before the first token. It happens **once** per cache directory. If startup time
+matters, pre-warm deliberately (SGLang: `python -m sglang.compile_deep_gemm`, or
+`SGLANG_JIT_DEEPGEMM_FAST_WARMUP=1` to cut the warm-up set).
+
+### 4.9 Run the test suites
 
 ```bash
 cd sgl_deep_gemm/tests
@@ -394,10 +503,13 @@ long (the FP8 sweep is heavy) and the JIT compiles each shape on first use;
 `test_bf16.py` alone takes many minutes on a 20-SM part. To run one subset,
 call the individual test function instead of the whole file.
 
-> The repo-root `tests/` directory contains the same suites plus additional
-> Mega MoE / TRT-LLM / SiTU variants that need extra dependencies
-> (TileKernels, TileLang, DeepEP). The `sgl_deep_gemm/tests/` copies are the
-> ones used for the results recorded here.
+> **Which directory to run.** `sgl_deep_gemm/tests/` is the superset: it holds
+> all 14 files of the repo-root `tests/` plus 13 more Mega MoE / TRT-LLM / SiTU
+> variants that need extra dependencies (TileKernels, TileLang, DeepEP). The
+> shared files are also **newer** there — they carry the SM120 `skip:` guards
+> and `test_bf16_repeatability` / `test_sm90_block32` entry points that the
+> repo-root copies lack. All results recorded here come from
+> `sgl_deep_gemm/tests/`.
 
 ---
 
@@ -460,7 +572,30 @@ SGLang tree, not here.
 
 ---
 
-## 7. Fork branch notes
+## 7. Beyond the dispatch patch
+
+The SM110 enablement itself is the 45-site change in §1. Everything below is
+**separate** — it does not alter kernel selection, and none of it is needed for
+the patch to work. It exists because integrating this fork into a serving stack
+surfaced avoidable failure modes:
+
+| Change | Problem it removes | Where |
+|---|---|---|
+| `deep_gemm.supported_arch_majors()` / `supports_arch()` | Frameworks had to guess capability from the version string, which cannot distinguish a stale `_C.so` from a current one | §4.6 |
+| `python -m deep_gemm.doctor` | Diagnosing an install meant manually checking five things by hand | §4.7 |
+| Actionable `CUDA_HOME` error | A bare `AssertionError` at import with no hint about the device headers | §4.2 |
+| Build-time prerequisite checks | `nvcc`/headers problems surfaced later as opaque compiler or linker errors | §4.4 |
+| Documented two build paths | `pip install .` silently installs an unrelated `deep_gemm 2.8.0` | top of this page |
+| `DG_JIT_CACHE_DIR` semantics | The read-only lookup-root feature was undocumented, so baked caches were unusable | §4.8 |
+
+The capability query is the one piece that touches `csrc/`: it adds a
+`csrc/utils/arch.hpp` constant and one registered read-only accessor. It does not
+change dispatch, and it reads a constant rather than querying the device, so it
+answers without a CUDA context and cannot drift from the device it describes.
+
+---
+
+## 8. Fork branch notes
 
 This fork inherits the conventions of the `sgl-project/DeepGEMM` fork:
 
@@ -473,7 +608,7 @@ This fork inherits the conventions of the `sgl-project/DeepGEMM` fork:
 
 ---
 
-## 8. Upstream project
+## 9. Upstream project
 
 This fork replaces the upstream DeepGEMM README with the page you are reading.
 The original is preserved verbatim at
