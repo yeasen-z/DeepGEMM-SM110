@@ -5,6 +5,9 @@ record of exactly how far that support has been verified.
 
 - **Base**: `sgl-project/DeepGEMM` **v0.2.3** (`e6f9bd6`)
 - **Target**: NVIDIA Jetson AGX Thor Developer Kit — `sm_110`, compute capability **11.0**
+- **Implementation**: a single commit, [`db919b4`](https://github.com/yeasen-z/DeepGEMM-SM110/commit/db919b4) — 45 sites in 10 host headers
+- **Full diff vs upstream v0.2.3**: [`e6f9bd6...main`](https://github.com/yeasen-z/DeepGEMM-SM110/compare/e6f9bd6...main)
+- **All changes in this fork**: [`1853080...main`](https://github.com/yeasen-z/DeepGEMM-SM110/compare/1853080...main)
 - **Patched artifact**: `deep_gemm/_C.so` — this fork changes **host code only**, and `_C.so` embeds its build-time source path, so its md5 identifies *one particular build* (ours: `66e8ee99…`), not the patch. Verify your own build behaviourally, with §4.5.
 - **Full write-up**: [docs/sm110-thor-support.md](docs/sm110-thor-support.md)
 - **Upstream README** (this fork replaced it, kept for reference): [README.upstream.md](README.upstream.md)
@@ -29,7 +32,9 @@ macros resolve identically, and DeepJIT already derives the correct target
 dispatcher** that SM110 is an SM100-class device. Device code, CUTLASS, and
 DeepJIT are untouched.
 
-**45 comparison sites across 10 host headers**, in four textual shapes:
+**45 comparison sites across 10 host headers**, in four textual shapes. The whole
+change is one commit — [`db919b4`](https://github.com/yeasen-z/DeepGEMM-SM110/commit/db919b4),
+45 insertions / 45 deletions:
 
 | # | Before | After | Sites |
 |---|---|---|---|
@@ -40,16 +45,16 @@ DeepJIT are untouched.
 
 | File | Sites | Area |
 |---|---:|---|
-| `csrc/apis/attention.hpp` | 16 | MQA logits: dense, sparse, paged; metadata builders |
-| `csrc/apis/gemm.hpp` | 10 | FP8/FP4 dense + grouped GEMM, BF16 dense + grouped GEMM, k-grouped |
-| `csrc/apis/einsum.hpp` | 5 | `bmk_bnk_mn`, `bhr_hdr_bhd`, `bhd_hdr_bhr`, FP8 BMM |
-| `csrc/apis/layout.hpp` | 5 | SF transform into required layout (dense + k-grouped) |
-| `csrc/utils/layout.hpp` | 3 | FP4 packed-AB checks, default recipe |
-| `csrc/apis/mega_moe.hpp` | 2 | `fp8_fp4_mega_moe`, `bf16_mega_moe` (SM100 path) |
-| `csrc/apis/mega_gate.hpp` | 1 | `bf16_mega_gate` |
-| `csrc/apis/mega_mhc.hpp` | 1 | `mega_mhc` |
-| `csrc/apis/hyperconnection.hpp` | 1 | `tf32_hc_prenorm_gemm` |
-| `csrc/jit_kernels/heuristics/runtime.hpp` | 1 | contiguous-MK alignment (`224/32/32`, the SGLang-tuned SM100 values) |
+| [`csrc/apis/attention.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/apis/attention.hpp) | 16 | MQA logits: dense, sparse, paged; metadata builders |
+| [`csrc/apis/gemm.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/apis/gemm.hpp) | 10 | FP8/FP4 dense + grouped GEMM, BF16 dense + grouped GEMM, k-grouped |
+| [`csrc/apis/einsum.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/apis/einsum.hpp) | 5 | `bmk_bnk_mn`, `bhr_hdr_bhd`, `bhd_hdr_bhr`, FP8 BMM |
+| [`csrc/apis/layout.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/apis/layout.hpp) | 5 | SF transform into required layout (dense + k-grouped) |
+| [`csrc/utils/layout.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/utils/layout.hpp) | 3 | FP4 packed-AB checks, default recipe |
+| [`csrc/apis/mega_moe.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/apis/mega_moe.hpp) | 2 | `fp8_fp4_mega_moe`, `bf16_mega_moe` (SM100 path) |
+| [`csrc/apis/mega_gate.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/apis/mega_gate.hpp) | 1 | `bf16_mega_gate` |
+| [`csrc/apis/mega_mhc.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/apis/mega_mhc.hpp) | 1 | `mega_mhc` |
+| [`csrc/apis/hyperconnection.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/apis/hyperconnection.hpp) | 1 | `tf32_hc_prenorm_gemm` |
+| [`csrc/jit_kernels/heuristics/runtime.hpp`](https://github.com/yeasen-z/DeepGEMM-SM110/blob/main/csrc/jit_kernels/heuristics/runtime.hpp) | 1 | contiguous-MK alignment (`224/32/32`, the SGLang-tuned SM100 values) |
 
 Deliberately **not** changed: `csrc/runtime/jit.hpp` (major 11 already falls
 through to the correct DeepJIT default), the `arch_major == 9` Hopper-only paths,

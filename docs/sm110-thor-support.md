@@ -106,7 +106,11 @@ prenorm, Mega Gate, Mega mHC, and Mega MoE.
 
 ### 2.3 The full patch
 
-`git diff` of the change is the entire content of this section:
+The complete change is a single commit,
+[`db919b4`](https://github.com/yeasen-z/DeepGEMM-SM110/commit/db919b4); to see it
+against upstream v0.2.3, use the
+[`e6f9bd6...main` comparison](https://github.com/yeasen-z/DeepGEMM-SM110/compare/e6f9bd6...main).
+`git diff --stat` of the host layer is the entire content of this section:
 
 ```
  csrc/apis/attention.hpp                 | 32 ++++++++++++++++----------------
