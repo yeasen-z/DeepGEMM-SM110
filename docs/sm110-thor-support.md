@@ -9,11 +9,12 @@ and test it, and what the recorded verification results were.
 - Status: the dispatch path works and has been exercised **end to end** — SGLang
   serving `Qwen3-8B-FP8` on Thor with the DeepGEMM FP8 backend produces correct
   generation, and a steady-state prefill measurement puts DeepGEMM **1.47x** faster
-  than the Triton backend. Every DeepGEMM test case that has been run passed with
-  zero assertion failures. The full test suite has **not** been run end to end on
-  this part; per-section coverage is in [§5.1](#51-numerical-correctness). SGLang
-  integration has one extra prerequisite
-  (see [§6](#6-sglang-integration-prerequisite)).
+  than the Triton backend. The full suite **has** now been run to completion:
+  `test_bf16.py`, `test_fp8_fp4.py` and `test_layout.py` finished with exit 0,
+  **1074 cases, zero assertion failures, zero tracebacks** (per-section numbers in
+  [§5.1](#51-numerical-correctness)). Two paths reachable on SM110 are not covered
+  by the suite and are called out explicitly in §5.1.1. SGLang integration has one
+  extra prerequisite (see [§6](#6-sglang-integration-prerequisite)).
 
 ---
 
@@ -107,9 +108,9 @@ prenorm, Mega Gate, Mega mHC, and Mega MoE.
 ### 2.3 The full patch
 
 The complete change is a single commit,
-[`db919b4`](https://github.com/yeasen-z/DeepGEMM-SM110/commit/db919b4); to see it
+[`db919b4`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/commit/db919b4); to see it
 against upstream v0.2.3, use the
-[`e6f9bd6...main` comparison](https://github.com/yeasen-z/DeepGEMM-SM110/compare/e6f9bd6...main).
+[`e6f9bd6...main` comparison](https://github.com/yeasen-z/DeepGEMM-thor-sm110/compare/e6f9bd6...main).
 `git diff --stat` of the host layer is the entire content of this section:
 
 ```
