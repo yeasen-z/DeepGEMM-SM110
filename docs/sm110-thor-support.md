@@ -12,8 +12,9 @@ and test it, and what the recorded verification results were.
   than the Triton backend. The full suite **has** now been run to completion:
   `test_bf16.py`, `test_fp8_fp4.py` and `test_layout.py` finished with exit 0,
   **1074 cases, zero assertion failures, zero tracebacks** (per-section numbers in
-  [§5.1](#51-numerical-correctness)). Two paths reachable on SM110 are not covered
-  by the suite and are called out explicitly in §5.1.1. SGLang integration has one
+  [§5.1](#51-numerical-correctness)). Two further sections are skipped by the suite
+  itself but were run unguarded and pass — FP4 k-grouped (189 cases) and the
+  k-grouped psum SF layout (224 cases); see §5.1.1. SGLang integration has one
   extra prerequisite (see [§6](#6-sglang-integration-prerequisite)).
 
 ---
@@ -91,10 +92,11 @@ Two details that matter:
 | `csrc/apis/hyperconnection.hpp` | 1 | `tf32_hc_prenorm_gemm` |
 | `csrc/jit_kernels/heuristics/runtime.hpp` | 1 | contiguous-MK alignment (`224/32/32`, the SGLang-tuned SM100 values) |
 
-Coverage therefore includes FP8 and FP4 (dense, grouped-contiguous, grouped-
-masked, k-grouped), BF16 (dense, grouped, k-grouped), einsum, scaling-factor
-layout handling, the lightning-indexer MQA scoring kernels, HyperConnection
-prenorm, Mega Gate, Mega mHC, and Mega MoE.
+Coverage therefore includes FP8 and the separately checked k-grouped FP4 path,
+BF16 (dense, grouped, k-grouped), einsum, scaling-factor layout handling,
+the lightning-indexer MQA scoring kernels, and HyperConnection. Mega Gate, Mega
+mHC and Mega MoE remain untested because their reference dependencies are not
+installed.
 
 ### 2.2 Deliberately *not* changed
 
@@ -262,7 +264,7 @@ pack/transpose kernels for bit-exactness.
 A `Perf (...)` line is emitted only after that shape's assertion has passed, so
 the number of `Perf` lines is a direct progress/completeness signal.
 
-### 4.0 One section is skipped on SM110 — and why that matters
+### 4.0 Two sections skip themselves on SM110 — and why that matters
 
 `test_layout.py`'s third section returns before doing anything unless the arch
 major is exactly 10:
@@ -275,20 +277,29 @@ def test_k_grouped_psum_sf_layout_kernels() -> None:
         return
 ```
 
-Upstream treats that section as SM100-only — but this fork's patch routes arch
-11 into the very same path (`csrc/apis/layout.hpp`, the two predicates commented
-`FP32 on SM100` and `Pre-packed UE8M0 supports both scale granularities on
-SM100`, which now read `arch_major == 10 or arch_major == 11`).
+`test_fp8_fp4.py` gates FP4 the same way, on the option list rather than an
+early return:
 
-So on Thor the kernel is **reachable but unverified by the suite**: the guard is
-a statement about which architectures the *test* trusts, not about what the
+```python
+test_options = [(torch.float8_e4m3fn, QuantConfig(), <fp8 kernel>)]
+if arch_major == 10:
+    test_options.append((torch.float4_e2m1fn_x2, QuantConfig((32, 32, True, True)),
+                         deep_gemm.k_grouped_fp4_gemm_nt_contiguous))
+```
+
+Upstream treats both as SM100-only — but this fork's patch routes arch 11 into
+the very same paths (`csrc/apis/layout.hpp`, and `csrc/utils/layout.hpp:64,73`
+which accepts `kPackedFP4` for `10 or 11 or 12`).
+
+So on Thor both are **reachable but unverified by the suite**: the guards are
+statements about which architectures the *test* trusts, not about what the
 *patched binary* will dispatch to. That is precisely the failure mode this
 document is most concerned with — a kernel family that runs where nobody looked.
 
-It was therefore checked separately, with the same assertions and the guard
-removed (`psum_sm110_check.py`): the packed k-grouped psum scale-factor layout
-produces bit-exact results on SM110 for both `compact_sf` variants and all three
-`ks` forms (explicit aligned, `None`, empty). See §5.1.
+Note what is *not* gated: the generators. `enumerate_k_grouped_psum_sf_layout`
+and the FP4 branch of `enumerate_k_grouped_contiguous` yield cases for any arch.
+Only the test bodies were holding them back, which is why both could be checked
+by removing the guard and keeping the assertions. See §5.1.1.
 
 ### 4.1 Two build paths — pick the right one
 
@@ -395,7 +406,16 @@ added only for major 10).
 | `test_layout.py` → `Testing SF layout kernels` | 216 | 216 | 0 |
 | `test_layout.py` → k-grouped SF layout | 56 | 56 | 0 |
 | `test_layout.py` → k-grouped psum SF layout | 0 (skipped) | 0 | — |
+| `test_fp8_fp4.py` → FP4 k-grouped GEMM | 0 (skipped) | 0 | — |
 | **Total** | **1074** | | **0** |
+
+Two further sections are skipped by the suite but were run unguarded; they are
+*not* part of the 1074 above (see §5.1.1):
+
+| Unguarded check | Cases | Failures |
+|---|---:|---:|
+| k-grouped psum SF layout | 224 | 0 |
+| FP4 k-grouped GEMM | 189 | 0 |
 
 The `Perf` counts for the sections that *do* print one line per case are the
 totals above; some sections print inside an inner loop, so the mapping from
@@ -422,15 +442,19 @@ kernel bug: the same figure is produced by the dequantized reference built from
 the exact tensors the kernel consumed, and the pre-requant comparison differs by
 two orders of magnitude (0.41 vs 0.0017).
 
-### 5.1.1 The psum SF layout path, checked with the guard removed
+### 5.1.1 Paths reachable on SM110 that the suite skips, checked unguarded
 
-`test_layout.py`'s third section returns immediately on any arch but 10 (§4.0),
-yet the patch routes arch 11 into that same packed-psum path. The assertions were
-re-run with the guard removed (`psum_sm110_check.py`, identical body):
+Two sections became reachable on Thor because of the patch while the upstream
+test files decline to run them. In both cases the skip lives in the *test body*,
+not in the generator, so the same assertions can be run with the guard removed.
+
+**k-grouped psum SF layout** (`test_layout.py`). The section returns immediately
+on any arch but 10 (§4.0), yet the patch routes arch 11 into that same
+packed-psum path. Re-run with the guard removed (`psum_sm110_check.py`):
 
 | Property | Value |
 |---|---|
-| Cases | 36 (18 tuples × `compact_sf` ∈ {False, True}) |
+| Cases | 224 (112 tuples × `compact_sf` ∈ {False, True}) |
 | Failures | 0 |
 | Comparison | `torch.equal` against the PyTorch reference packing — bit-exact |
 | `num_groups` covered | 8, 16, 72 |
@@ -443,9 +467,31 @@ Both output widths are correct for every case: the compact form is compared on
 its prefix (`[:sum(packed_sf_ks)]`) and the padded form on the whole tensor,
 matching how upstream distinguishes them.
 
-Note the earlier 36/224 floor: the check was interrupted while the main sweep
-was still running, to avoid the two competing for the same GPU. It is queued to
-run again to completion after the main sweep finishes.
+**FP4 k-grouped GEMM** (`test_fp8_fp4.py`). The test appends the FP4 option only
+under `if arch_major == 10` (line 233), so on Thor that file tests FP8 alone.
+But the patch accepts `kPackedFP4` for major 11 (`csrc/utils/layout.hpp:64,73`),
+and the FP4 *cases* are not arch-gated —
+`enumerate_k_grouped_contiguous` has a complete FP4 branch (K-major only,
+`gran_k=32`, `k_alignment` 256/512/768) that yields for any arch. Only the test
+body held it back.
+
+Re-run with the guard removed (`fp4_sm110_check.py`), reusing the test's own
+generators and assertions:
+
+| Property | Value |
+|---|---|
+| Cases | 189 (7 grouped shapes × 3 `k_alignment` × 3 `cd_options` × 3 `ks` variants) |
+| Failures | 0 |
+| Exit code | 0 |
+| Per-case checks | 20-iteration bitwise determinism; FP4 vs converted FP8 `< 1e-14`; direct output vs FP32 accumulation |
+| Final check | `calc_diff < max_diff()` = 0.02 for FP4 |
+| `num_groups` covered | 4, 8, 16 |
+| `accumulate` | both |
+| `out_dtype` | FP32, BF16 |
+
+So FP4 is **verified** on SM110, but by a harness of ours rather than the
+upstream suite, and only for the k-grouped path. Dense and m-grouped FP4, and
+the Mega MoE FP4 path, are still unchecked.
 
 ### 5.2 End-to-end on a real model (SGLang + `Qwen3-8B-FP8`)
 
@@ -651,6 +697,12 @@ SGLang edits, with `SGLANG_ENABLE_JIT_DEEPGEMM=1`.
   can enforce.
 - Mega Gate and Mega mHC dispatch through SM110 by the same rule, but their
   reference comparisons need TileKernels/TileLang and were not exercised here.
+- FP4 is verified only for the **k-grouped** path, and only by our own harness
+  (§5.1.1). Dense FP4, m-grouped FP4 and the Mega MoE FP4 path are unchecked.
+- The main-sweep `_C.so` was replaced part-way through by an unrelated process,
+  so `test_bf16.py` ran against one patched build and `test_fp8_fp4.py` /
+  `test_layout.py` against another (same source, different embedded build path).
+  See README §2.2 for why this does not affect the conclusions.
 - `Qwen3-8B-FP8` end-to-end generation succeeded (§5.2), but that is a **dense**
   model: it exercises the dense block-FP8 GEMM path only. Grouped / MoE
   inference (and `DeepSeek-V3`-class models) was not run against this revision.

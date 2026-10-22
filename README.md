@@ -120,8 +120,9 @@ Per section (`Perf` lines = cases that passed their assertion):
 | FP8 k-grouped GEMM | 231 | 231 | **Verified** |
 | SF layout pack/transpose | 216 | 216 | **Verified** |
 | k-grouped SF layout | 56 | 56 | **Verified** |
-| k-grouped psum SF layout | 0 (skipped) | 0 | checked separately, §2.1 |
-| FP4 (all paths) | 0 | 0 | **not tested** — see below |
+| k-grouped psum SF layout | 224 (unguarded) | 224 | **Verified**, §2.1 |
+| FP4 k-grouped GEMM | 189 (unguarded) | 189 | **Verified**, §2.1 |
+| FP4 dense / m-grouped / Mega MoE | 0 | — | **not tested** |
 | JIT `bf16_gemm_nt` vs dequantized ref | — | — | **Verified**, `rel_L2 = 1.66e-3` |
 | JIT `fp8_gemm_nt` vs dequantized ref | — | — | **Verified**, `rel_L2 = 1.65e-3` |
 | SGLang real layer path, block-FP8, `M=N=K=4096` | — | — | **Verified**, `rel_L2 = 1.66e-3` |
@@ -133,36 +134,39 @@ The end-to-end row is the strongest evidence here: it drives every linear in the
 model through DeepGEMM's block-scaled FP8 kernel, including UE8M0-requantized
 weight scales, and yields coherent — not merely finite — text.
 
-**Two things the suite structurally cannot tell you**, because the test
-generators themselves gate them on `arch_major == 10`:
+**Two kernel paths are reachable on SM110 but skipped by the original test
+bodies**: FP4 is omitted from the option list, and psum returns early unless the
+major is 10. Both were exercised separately using the existing generators and
+correctness checks, without changing the real device architecture:
 
-- **FP4 is entirely untested here.** On SM110 the FP8 suites only ever
-  enumerate `torch.float8_e4m3fn`; the `float4_e2m1fn_x2` variants are added
-  under `if arch_major == 10`, and `QuantConfig.get_list_from_dtype()` returns
-  only the plain FP8 config for major 11. The patch *does* route FP4 through
-  SM110 (`csrc/utils/layout.hpp` accepts `kPackedFP4` for major 11), so FP4 is
-  reachable and unverified. Treat it as unproven.
-- **`test_layout.py`'s psum section skips itself** on any arch but 10, while the
-  patch routes arch 11 into that same path. It was checked separately instead —
-  same assertions, guard removed; see §2.1.
+- **FP4 (k-grouped).** `test_fp8_fp4.py` only appends the FP4 option under
+  `if arch_major == 10` (line 233), so on Thor the file enumerates FP8 alone.
+  But `enumerate_k_grouped_contiguous` has a complete FP4 branch (K-major only,
+  `gran_k` 32 with `k_alignment` 256/512/768) that is *not* arch-gated, and
+  `csrc/utils/layout.hpp` accepts `kPackedFP4` for major 11. Re-ran the FP4
+  half of that test unguarded: **189 cases, 0 failures** — including bitwise
+  determinism over 20 iterations per case, FP4-vs-converted-FP8 agreement to
+  `1e-14`, and direct-output agreement with FP32 accumulation. See §2.1.
+- **`test_layout.py`'s psum SF section.** Skips itself on any arch but 10 via
+  `if get_arch_major() != 10`. Re-ran unguarded: **224 cases, 0 failures**,
+  bit-exact against the PyTorch reference. See §2.1.
 
-**Not yet covered — unproven, not known-bad:** the entire
-`attention` / `einsum` / `hyperconnection` / `mega_gate` / `mega_mhc` /
-`mega_moe` API families, and all FP4 paths.
+**Not yet covered — unproven, not known-bad:** Mega Gate, Mega mHC, Mega MoE,
+and dense / m-grouped FP4. The attention, einsum and hyperconnection test files
+have now passed as whole files — see §2.3.
 
 **Requires its own verification before being enabled on Thor:** Mega MoE (its
-reference needs TileKernels/TileLang), Mega Gate, Mega mHC, the lightning-indexer
-MQA scoring kernels, HyperConnection, and FP4. These dispatch through SM110 by
-the same rule but have not been numerically checked here.
+reference needs TileKernels/TileLang), Mega Gate, Mega mHC, and dense /
+m-grouped FP4. The k-grouped FP4 path is verified separately above.
 
 See [docs/sm110-thor-support.md §5](docs/sm110-thor-support.md) for the raw
 numbers.
 
 ### 2.1 Paths reachable on SM110 that the suite refuses to test
 
-Two kernel paths became reachable on Thor *because of this patch* while the
-upstream test suite declines to exercise them. One was checked by hand; the
-other cannot be, and is left explicitly unproven.
+Two kernel paths became reachable on Thor *because of this patch*, while the
+upstream test files decline to exercise them. Both were re-run with the guard
+removed, and both pass.
 
 **k-grouped psum scale-factor layout.** `test_layout.py` returns before doing
 anything unless the arch major is exactly 10 — but `csrc/apis/layout.hpp` routes
@@ -171,33 +175,62 @@ arch 11 into that same packed-psum path (its two predicates are still commented
 `arch_major == 10 or arch_major == 11`). The guard describes what the *test*
 trusts, not what the *patched binary* will dispatch to.
 
-Re-ran the same assertions with the guard removed: **36 cases, bit-exact against
-the PyTorch reference, 0 failures**, covering `compact_sf` in both states, three
-`ks` forms (explicit aligned, `None`, empty), `num_groups` of 8/16/72, `gran_k`
-of 32 and 128, and `k_alignment` of 32/128/256/384.
+Re-ran the same assertions with the guard removed: **224 cases, bit-exact
+against the PyTorch reference, 0 failures**, covering `compact_sf` in both
+states, three `ks` forms (explicit aligned, `None`, empty), `num_groups` of
+8/16/72, `gran_k` of 32 and 128, and `k_alignment` of 32/128/256/384.
 
-**FP4.** Not testable via the suite on SM110 at all (see above), so it is listed
-as unproven rather than verified. This is the one open risk in the patch: the
-FP4 dispatch predicates accept major 11 but nothing has validated the kernels.
+**FP4 (k-grouped GEMM).** `test_fp8_fp4.py:233` appends the FP4 option only when
+`arch_major == 10`, so on Thor that file tests FP8 alone — yet the patch accepts
+`kPackedFP4` for major 11 (`csrc/utils/layout.hpp:64,73`:
+`arch_major == 10 or arch_major == 11 or arch_major == 12`). Crucially the FP4
+*cases* are not arch-gated: `enumerate_k_grouped_contiguous` has a full FP4
+branch (K-major only, `gran_k=32`, `k_alignment` 256/512/768) that runs for any
+arch. Only the test body was holding it back.
+
+Re-ran the FP4 half of that test unguarded: **189 cases, 0 failures**, exit 0.
+Each case ran 20-iteration bitwise determinism against an initial kernel call.
+Accumulation cases additionally checked FP4-vs-converted-FP8 agreement below
+`1e-14` and `calc_diff(d, ref_d) < 0.02`; direct-output cases checked agreement
+with FP32 accumulation. Covered 7 grouped shapes
+(`num_groups` 4/8/16), all three `k_alignment` values, `accumulate` both ways,
+and `out_dtype` FP32/BF16.
+
+So FP4 is **verified, not merely reachable** — but by a harness of ours, not by
+the upstream suite, and only for the k-grouped path. The dense/`m-grouped` FP4
+paths and the Mega MoE FP4 path remain unchecked.
 
 Scope note: `Qwen3-8B-FP8` is a dense model, so the end-to-end run exercised only
-the **dense** block-FP8 GEMM path. Grouped / MoE paths (the `m-grouped` and
-`k-grouped` sections, Mega MoE) are **not** covered by that run, which is why
-they are listed separately above.
+the **dense** block-FP8 GEMM path. Grouped / MoE paths are **not** covered by
+that run, which is why they are listed separately above.
 
 ### 2.2 One caveat about the run itself
 
-The sweep took ~1h40m and the `_C.so` was replaced underneath it at 11:03 —
-not by this test run. So `test_bf16.py` executed against one build and
-`test_fp8_fp4.py` / `test_layout.py` against another. Both were patched builds
-of the same source, differing only in the embedded build path (hence different
-hashes); the second one is proven patched by the 625 cases that passed against
-it, since an unpatched binary aborts on the first call with
-`Unsupported architecture`. The first process kept running on the inode it had
-already mapped, so replacing the file mid-run did not disturb it.
+The installed package changed during the sweep (its files have an 11:03
+modification time). Thus this was not a controlled, immutable-build run:
+BF16 started before the change, while FP8 and layout started afterwards.
+All three processes finished successfully, and the later build passed 625
+cases, demonstrating SM110 support for the exercised paths. We did not retain
+both binaries or establish how the replacement occurred, so we cannot claim
+they differ only in embedded paths or prove that an atomic replacement left
+the first process unaffected. A single-build rerun is needed for strict
+artifact-level reproducibility.
 
-This is a good illustration of why verification here is behavioural rather than
-hash-based: the same sources, built twice, produce two different binaries.
+### 2.3 The other API families
+
+Beyond the three main files, the remaining runnable test files were executed as
+whole files against the same patched build. All exited 0 with **zero
+tracebacks**:
+
+| File | Cases | Exit | Notes |
+|---|---:|---:|---|
+| `test_attention.py` | 4 sections | 0 | GEMM skip-head-mid + MQA logits (dense/paged/sparse) |
+| `test_einsum.py` | 60 | 0 | BF16 and FP8 batched matmuls |
+| `test_hyperconnection.py` | 24 | 0 | `tf32_hc_prenorm_gemm` |
+
+`test_mega_gate.py`, `test_mega_mhc.py` and `test_mega_moe.py` cannot run here:
+they need TileKernels / TileLang, which are not installed on this machine. Those
+paths remain unchecked.
 
 ---
 
