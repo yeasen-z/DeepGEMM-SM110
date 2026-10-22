@@ -161,7 +161,8 @@ numbers.
 ### 2.1 Paths reachable on SM110 that the suite refuses to test
 
 Two kernel paths became reachable on Thor *because of this patch* while the
-upstream test suite declines to exercise them. Both were checked by hand.
+upstream test suite declines to exercise them. One was checked by hand; the
+other cannot be, and is left explicitly unproven.
 
 **k-grouped psum scale-factor layout.** `test_layout.py` returns before doing
 anything unless the arch major is exactly 10 — but `csrc/apis/layout.hpp` routes
