@@ -261,6 +261,34 @@ pack/transpose kernels for bit-exactness.
 A `Perf (...)` line is emitted only after that shape's assertion has passed, so
 the number of `Perf` lines is a direct progress/completeness signal.
 
+### 4.0 One section is skipped on SM110 — and why that matters
+
+`test_layout.py`'s third section returns before doing anything unless the arch
+major is exactly 10:
+
+```python
+def test_k_grouped_psum_sf_layout_kernels() -> None:
+    print('Testing k-grouped psum SF layout kernels:')
+    if get_arch_major() != 10:
+        print(' > Skipped (packed k-grouped SF only supported on SM100)')
+        return
+```
+
+Upstream treats that section as SM100-only — but this fork's patch routes arch
+11 into the very same path (`csrc/apis/layout.hpp`, the two predicates commented
+`FP32 on SM100` and `Pre-packed UE8M0 supports both scale granularities on
+SM100`, which now read `arch_major == 10 or arch_major == 11`).
+
+So on Thor the kernel is **reachable but unverified by the suite**: the guard is
+a statement about which architectures the *test* trusts, not about what the
+*patched binary* will dispatch to. That is precisely the failure mode this
+document is most concerned with — a kernel family that runs where nobody looked.
+
+It was therefore checked separately, with the same assertions and the guard
+removed (`psum_sm110_check.py`): the packed k-grouped psum scale-factor layout
+produces bit-exact results on SM110 for both `compact_sf` variants and all three
+`ks` forms (explicit aligned, `None`, empty). See §5.1.
+
 ### 4.1 Two build paths — pick the right one
 
 The repository carries both this fork's packaging (`sgl_deep_gemm/` +
@@ -334,31 +362,51 @@ Exits non-zero on a real problem. It deliberately does **not** print a hash of
 
 ### 5.1 Numerical correctness
 
-Every case that was run passed its assertion; **zero assertion failures and
-zero tracebacks** were recorded across all suites. Coverage is stated
-per *section* of each test file, because the suite is long-running and the
-recorded runs were stopped part-way (a full `test_bf16.py` sweep takes many
-minutes on a 20-SM part, and shares the GPU with other work).
+**All three suites ran to completion.** Every file exited 0, and every case
+passed its assertion — **zero assertion failures, zero tracebacks**:
 
-Section sizes below are the exact generator yields, counted with the
-generators themselves for major 11:
+| Suite | Cases | Sections | Exit |
+|---|---:|---:|---:|
+| `test_bf16.py` | 449 | 7 | 0 |
+| `test_fp8_fp4.py` | 353 | 4 | 0 |
+| `test_layout.py` | 272 | 2 ran, 1 skipped | 0 |
+| **Total** | **1074** | | |
+
+Section sizes below are the exact generator yields on major 11, counted by
+running the generators themselves — they are *not* copied from SM100
+expectations, because several generators emit fewer cases on this arch
+(`use_alpha_options` is `(False,)` unless the major is 10, and FP4 variants are
+added only for major 10).
 
 | Suite / section | Cases run | Cases in section | Assertion failures |
 |---|---:|---:|---:|
 | `test_bf16.py` → `Testing GEMM` (dense) | 84 | 84 | 0 |
 | `test_bf16.py` → m-grouped contiguous | 48 | 48 | 0 |
-| `test_bf16.py` → m-grouped masked | 8 | 32 | 0 |
-| `test_bf16.py` → k-grouped contiguous | not run | 105 | — |
-| `test_bf16.py` → cuBLASLt GEMM / SYRK / SYMM | not run | — | — |
-| `test_fp8_fp4.py` → `Testing GEMM` | 26 | 42 | 0 |
-| `test_fp8_fp4.py` → grouped sections | not run | — | — |
-| `test_layout.py` → `Testing SF layout kernels` | 7 | 216 | 0 |
-| `test_layout.py` → k-grouped / psum sections | not run | — | — |
+| `test_bf16.py` → m-grouped masked | 32 | 32 | 0 |
+| `test_bf16.py` → k-grouped contiguous | 105 | 105 | 0 |
+| `test_bf16.py` → cuBLASLt GEMM | 84 | 84 | 0 |
+| `test_bf16.py` → cuBLASLt batched SYRK | 32 | 32 | 0 |
+| `test_bf16.py` → cuBLASLt batched SYMM | 64 | 64 | 0 |
+| `test_fp8_fp4.py` → `Testing GEMM` (FP8 only on SM110) | 42 | 42 | 0 |
+| `test_fp8_fp4.py` → m-grouped contiguous | 48 | 48 | 0 |
+| `test_fp8_fp4.py` → m-grouped masked | 32 | 32 | 0 |
+| `test_fp8_fp4.py` → k-grouped GEMM (FP8 only) | 231 | 231 | 0 |
+| `test_layout.py` → `Testing SF layout kernels` | 216 | 216 | 0 |
+| `test_layout.py` → k-grouped SF layout | 56 | 56 | 0 |
+| `test_layout.py` → k-grouped psum SF layout | 0 (skipped) | 0 | — |
+| **Total** | **1074** | | **0** |
+
+The `Perf` counts for the sections that *do* print one line per case are the
+totals above; some sections print inside an inner loop, so the mapping from
+`Perf` lines to enumerated cases is not always 1:1 — it was established by
+reading each section's loop nesting, not assumed.
 
 A `Perf (...)` line is printed only after that case's assertion has already
 passed, so "cases run with 0 failures" is directly evidenced by the `Perf`
-count with no accompanying traceback. The sections marked *not run* are simply
-not covered by the recorded runs — they are not known to fail.
+count with no accompanying traceback.
+
+The psum section reports zero because upstream skips it on any arch but 10. See
+§4.0 and the separate run below.
 
 Independent spot checks against a dequantized reference:
 
@@ -372,6 +420,31 @@ The ~1.6e-3 residual is the expected FP8 block-quantization error, not a
 kernel bug: the same figure is produced by the dequantized reference built from
 the exact tensors the kernel consumed, and the pre-requant comparison differs by
 two orders of magnitude (0.41 vs 0.0017).
+
+### 5.1.1 The psum SF layout path, checked with the guard removed
+
+`test_layout.py`'s third section returns immediately on any arch but 10 (§4.0),
+yet the patch routes arch 11 into that same packed-psum path. The assertions were
+re-run with the guard removed (`psum_sm110_check.py`, identical body):
+
+| Property | Value |
+|---|---|
+| Cases | 36 (18 tuples × `compact_sf` ∈ {False, True}) |
+| Failures | 0 |
+| Comparison | `torch.equal` against the PyTorch reference packing — bit-exact |
+| `num_groups` covered | 8, 16, 72 |
+| `gran_k` covered | 32, 128 |
+| `k_alignment` covered | 32, 128, 256, 384 |
+| `ks` forms covered | explicit aligned list, `None`, empty list |
+| `use_padded_sf_layout` | both (`compact_sf=False` exercises the padded path) |
+
+Both output widths are correct for every case: the compact form is compared on
+its prefix (`[:sum(packed_sf_ks)]`) and the padded form on the whole tensor,
+matching how upstream distinguishes them.
+
+Note the earlier 36/224 floor: the check was interrupted while the main sweep
+was still running, to avoid the two competing for the same GPU. It is queued to
+run again to completion after the main sweep finishes.
 
 ### 5.2 End-to-end on a real model (SGLang + `Qwen3-8B-FP8`)
 

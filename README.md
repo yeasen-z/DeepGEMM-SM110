@@ -5,7 +5,7 @@ record of exactly how far that support has been verified.
 
 - **Base**: `sgl-project/DeepGEMM` **v0.2.3** (`e6f9bd6`)
 - **Target**: NVIDIA Jetson AGX Thor Developer Kit — `sm_110`, compute capability **11.0**
-- **Implementation**: a single commit, [`db919b4`](https://github.com/yeasen-z/DeepGEMM-SM110/commit/db919b4) — 45 sites in 10 host headers
+- **Implementation**: the dispatch change is a single commit, [`db919b4`](https://github.com/yeasen-z/DeepGEMM-SM110/commit/db919b4) — 45 sites in 10 host headers. A later commit adds packaging, diagnostics and a capability query (§7); it does not touch dispatch.
 - **Full diff vs upstream v0.2.3**: [`e6f9bd6...main`](https://github.com/yeasen-z/DeepGEMM-SM110/compare/e6f9bd6...main)
 - **All changes in this fork**: [`1853080...main`](https://github.com/yeasen-z/DeepGEMM-SM110/compare/1853080...main)
 - **Patched artifact**: `deep_gemm/_C.so` — this fork ships **no prebuilt binary**, on purpose: `_C.so` is tied to your CPU arch, your torch C++ ABI and your CUDA major, and it embeds its build-time source path, so no single binary is portable. Build it yourself (§4.4) and verify it behaviourally (§4.5).
@@ -93,20 +93,39 @@ kernel worked":
 2. Worse, an `__CUDA_ARCH__ >= 1000` guard may hold on SM110 while the kernel's
    assumptions do not, producing a **silently wrong** result.
 
-Verified so far (every case run passed its assertion — **zero assertion
-failures, zero tracebacks**):
+**These are complete runs, not samples.** All three files ran to the end with
+exit status 0 — **1074 cases, zero assertion failures, zero tracebacks** — and
+every section hit its expected case count exactly:
+
+| Suite | Cases | Exit |
+|---|---:|---|
+| `test_bf16.py` | 449 | 0 |
+| `test_fp8_fp4.py` | 353 | 0 |
+| `test_layout.py` | 272 | 0 |
+
+Per section (`Perf` lines = cases that passed their assertion):
 
 | Kernel path | Cases run | Cases in section | Status |
 |---|---:|---:|---|
-| **SGLang end-to-end, `Qwen3-8B-FP8`, DeepGEMM FP8 backend** | 4 prompts | 4 prompts | **Verified** — correct generation, matches Triton control |
-| BF16 dense GEMM (`test_bf16.py` → `Testing GEMM`) | 84 | 84 | **Verified** |
-| BF16 m-grouped contiguous | 48 | 48 | **Verified** |
-| BF16 m-grouped masked | 8 | 32 | **Partially verified** |
-| FP8 / FP4 dense GEMM (`test_fp8_fp4.py` → `Testing GEMM`) | 26 | 42 | **Partially verified** |
-| SF layout pack/transpose (`test_layout.py`) | 7 | 216 | **Partially verified** |
+| BF16 dense GEMM | 84 | 84 | **Verified** |
+| BF16 m-grouped, contiguous | 48 | 48 | **Verified** |
+| BF16 m-grouped, masked | 32 | 32 | **Verified** |
+| BF16 k-grouped, contiguous | 105 | 105 | **Verified** |
+| cuBLASLt GEMM (reference) | 84 | 84 | **Verified** |
+| cuBLASLt batched SYRK | 32 | 32 | **Verified** |
+| cuBLASLt batched SYMM | 64 | 64 | **Verified** |
+| FP8 dense GEMM | 42 | 42 | **Verified** |
+| FP8 m-grouped, contiguous | 48 | 48 | **Verified** |
+| FP8 m-grouped, masked | 32 | 32 | **Verified** |
+| FP8 k-grouped GEMM | 231 | 231 | **Verified** |
+| SF layout pack/transpose | 216 | 216 | **Verified** |
+| k-grouped SF layout | 56 | 56 | **Verified** |
+| k-grouped psum SF layout | 0 (skipped) | 0 | checked separately, §2.1 |
+| FP4 (all paths) | 0 | 0 | **not tested** — see below |
 | JIT `bf16_gemm_nt` vs dequantized ref | — | — | **Verified**, `rel_L2 = 1.66e-3` |
 | JIT `fp8_gemm_nt` vs dequantized ref | — | — | **Verified**, `rel_L2 = 1.65e-3` |
 | SGLang real layer path, block-FP8, `M=N=K=4096` | — | — | **Verified**, `rel_L2 = 1.66e-3` |
+| **SGLang end-to-end, `Qwen3-8B-FP8`** | 4 prompts | 4 prompts | **Verified** — coherent text, matches Triton control |
 | Stock build fails loudly, not silently | — | — | **Verified** (`Unsupported architecture`) |
 | **Steady-state throughput vs Triton** (prefill, real data) | 41 req / 1.44 M tok | — | **Verified** — **1.47x** overall, 2.21x on ~4k requests |
 
@@ -114,25 +133,70 @@ The end-to-end row is the strongest evidence here: it drives every linear in the
 model through DeepGEMM's block-scaled FP8 kernel, including UE8M0-requantized
 weight scales, and yields coherent — not merely finite — text.
 
-**Not yet covered — unproven, not known-bad:** k-grouped BF16 (105 cases),
-the remaining FP8/FP4 GEMM and grouped sections, the k-grouped and psum SF
-layout sections, the cuBLASLt reference sections, and the entire
+**Two things the suite structurally cannot tell you**, because the test
+generators themselves gate them on `arch_major == 10`:
+
+- **FP4 is entirely untested here.** On SM110 the FP8 suites only ever
+  enumerate `torch.float8_e4m3fn`; the `float4_e2m1fn_x2` variants are added
+  under `if arch_major == 10`, and `QuantConfig.get_list_from_dtype()` returns
+  only the plain FP8 config for major 11. The patch *does* route FP4 through
+  SM110 (`csrc/utils/layout.hpp` accepts `kPackedFP4` for major 11), so FP4 is
+  reachable and unverified. Treat it as unproven.
+- **`test_layout.py`'s psum section skips itself** on any arch but 10, while the
+  patch routes arch 11 into that same path. It was checked separately instead —
+  same assertions, guard removed; see §2.1.
+
+**Not yet covered — unproven, not known-bad:** the entire
 `attention` / `einsum` / `hyperconnection` / `mega_gate` / `mega_mhc` /
-`mega_moe` API families.
+`mega_moe` API families, and all FP4 paths.
 
 **Requires its own verification before being enabled on Thor:** Mega MoE (its
-reference needs TileKernels/TileLang), Mega Gate, Mega mHC, the
-lightning-indexer MQA scoring kernels, HyperConnection, and FP4 paths. These
-dispatch through SM110 by the same rule but have not been numerically checked.
+reference needs TileKernels/TileLang), Mega Gate, Mega mHC, the lightning-indexer
+MQA scoring kernels, HyperConnection, and FP4. These dispatch through SM110 by
+the same rule but have not been numerically checked here.
 
-The suite has **not** been run end to end on this part; per-section coverage
-above is the authoritative statement. See
-[docs/sm110-thor-support.md §5](docs/sm110-thor-support.md) for the raw numbers.
+See [docs/sm110-thor-support.md §5](docs/sm110-thor-support.md) for the raw
+numbers.
+
+### 2.1 Paths reachable on SM110 that the suite refuses to test
+
+Two kernel paths became reachable on Thor *because of this patch* while the
+upstream test suite declines to exercise them. Both were checked by hand.
+
+**k-grouped psum scale-factor layout.** `test_layout.py` returns before doing
+anything unless the arch major is exactly 10 — but `csrc/apis/layout.hpp` routes
+arch 11 into that same packed-psum path (its two predicates are still commented
+`FP32 on SM100` / `Pre-packed UE8M0 ... on SM100`, and now read
+`arch_major == 10 or arch_major == 11`). The guard describes what the *test*
+trusts, not what the *patched binary* will dispatch to.
+
+Re-ran the same assertions with the guard removed: **36 cases, bit-exact against
+the PyTorch reference, 0 failures**, covering `compact_sf` in both states, three
+`ks` forms (explicit aligned, `None`, empty), `num_groups` of 8/16/72, `gran_k`
+of 32 and 128, and `k_alignment` of 32/128/256/384.
+
+**FP4.** Not testable via the suite on SM110 at all (see above), so it is listed
+as unproven rather than verified. This is the one open risk in the patch: the
+FP4 dispatch predicates accept major 11 but nothing has validated the kernels.
 
 Scope note: `Qwen3-8B-FP8` is a dense model, so the end-to-end run exercised only
 the **dense** block-FP8 GEMM path. Grouped / MoE paths (the `m-grouped` and
 `k-grouped` sections, Mega MoE) are **not** covered by that run, which is why
 they are listed separately above.
+
+### 2.2 One caveat about the run itself
+
+The sweep took ~1h40m and the `_C.so` was replaced underneath it at 11:03 —
+not by this test run. So `test_bf16.py` executed against one build and
+`test_fp8_fp4.py` / `test_layout.py` against another. Both were patched builds
+of the same source, differing only in the embedded build path (hence different
+hashes); the second one is proven patched by the 625 cases that passed against
+it, since an unpatched binary aborts on the first call with
+`Unsupported architecture`. The first process kept running on the inode it had
+already mapped, so replacing the file mid-run did not disturb it.
+
+This is a good illustration of why verification here is behavioural rather than
+hash-based: the same sources, built twice, produce two different binaries.
 
 ---
 
@@ -436,7 +500,7 @@ DeepGEMM doctor
 ============================================================
 version               : 0.2.3+sm110
 package               : .../site-packages/deep_gemm
-_C.so                 : .../deep_gemm/_C.so (2,057,928 bytes, built 2026-10-22 12:04)  [ok]
+_C.so                 : .../deep_gemm/_C.so (2,050,896 bytes, built 2026-10-22 11:44)  [ok]
 CUDA_HOME             : /path/to/cuda  [ok]
 nvcc                  : /path/to/cuda/bin/nvcc  [ok]
 device headers        : /path/to/cuda/include/curand_kernel.h  [ok]
@@ -445,14 +509,17 @@ supported arch majors : sm9, sm10, sm11, sm12  [ok]
 device                : NVIDIA Thor, sm_110 (compute capability 11.0), 20 SMs  [ok]
 arch check            : sm11 is supported by this build  [ok]
 JIT cache             : /home/user/.dj  (default; set DG_JIT_CACHE_DIR to move)
-JIT cached kernels    : 37 entries in /home/user/.dj/cache
+JIT cached kernels    : 530 entries in /home/user/.dj/cache
 
 running a 128x128x128 bf16 GEMM through the dispatcher ...
-dispatch              : bf16_gemm_nt ran, max|diff| vs fp32 ref = 0.0000  [ok]
+dispatch              : bf16_gemm_nt ran, max|diff| vs fp32 ref = 0.0078  [ok]
 ============================================================
 
 RESULT: OK
 ```
+
+That is real output from this machine (paths shortened); the `_C.so` size and
+build time are this build's, so yours will differ.
 
 It reports the `_C.so` **path, size and build time** but never a hash: the
 binary embeds its build-time source path, so a hash differs between
