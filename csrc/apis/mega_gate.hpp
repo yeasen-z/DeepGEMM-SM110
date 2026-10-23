@@ -174,7 +174,10 @@ bf16_mega_gate(const torch::Tensor& x,
     DG_HOST_ASSERT(num_tokens <= static_cast<int>(layout::mega_gate::kNumMaxTokens));
 
     const auto arch_major = jit->device.get_arch_major();
-    DG_HOST_ASSERT(arch_major == 10 or arch_major == 11);
+    // Same SM100 kernel family as SM100, but Mega-Gate is feature-gated separately: Thor has
+    // no passing gate test, so arch_traits keeps this path off there until one exists.
+    DG_HOST_ASSERT(arch::uses_sm100_tuning(arch_major));
+    DG_HOST_ASSERT(arch::verified_feature("bf16_mega_gate", arch_major));
     const auto config = get_sm100_bf16_mega_gate_config(num_tokens, hidden, num_routed_experts,
                                                         runtime->get_num_sms(), bias.has_value(),
                                                         image_token_mask.has_value(), to_physical_map.has_value());

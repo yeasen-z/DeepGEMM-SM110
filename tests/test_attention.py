@@ -144,7 +144,8 @@ def test_mqa_logits():
 
     def enumerate_mqa_logits():
         # Formats: 'fp8' (per-KV float scale), 'mxfp4' / 'mxfp8' (per-32 block scale, SM100 only)
-        fmts = ('mxfp4', 'mxfp8', 'fp8') if get_arch_major() == 10 else ('fp8', )
+        arch_major = get_arch_major()
+        fmts = ('mxfp4', 'mxfp8', 'fp8') if arch_major == 10 else ('fp8', )
         for fmt in fmts:
             is_mxfp4 = fmt == 'mxfp4'
             for logits_dtype in (torch.bfloat16, torch.float):
@@ -163,8 +164,41 @@ def test_mqa_logits():
                                                 continue
                                             yield fmt, logits_dtype, weights_dtype, compressed_logits, clean_logits, seq_len, seq_len_kv, num_heads, head_dim, disable_cp
 
+    def enumerate_mqa_logits_sm110():
+        # SM110 is its own dispatch target: it runs the SM100 family but is not SM100, so its
+        # coverage is written out here, one variant per shape class, rather than doubling the
+        # SM100 matrix. BF16 weights + compressed logits is the path gated by
+        # arch::bf16_wide_split_enabled; the rest pin the unchanged 256-token split.
+        for fmt in ('mxfp4', 'mxfp8'):
+            is_mxfp4 = fmt == 'mxfp4'
+            for compressed_logits, logits_dtype in ((True, torch.bfloat16),
+                                                    (True, torch.float),
+                                                    (False, torch.float)):
+                for seq_len in (2048, 8192):
+                    for seq_len_kv in (8192, 65536):
+                        for num_heads in (8, 32):
+                            for head_dim in ((64, ) if is_mxfp4 else (64, 128)):
+                                yield (fmt, logits_dtype, torch.float, compressed_logits, not compressed_logits,
+                                       seq_len, seq_len_kv, num_heads, head_dim, False)
+        # The 384-token wide split is selected by `bf16_mqa_kernel`, which requires BF16
+        # *weights* -- every case above uses fp32 weights, so none of them reaches
+        # `sm100_bf16_mqa_logits`. Exercise it explicitly: with the split disabled the
+        # kernel asserts block_kv == kBF16MQALogitsSplitKV instead of falling back, so
+        # this is the only coverage that proves the path dispatches at all.
+        for fmt in ('mxfp4', 'mxfp8'):
+            is_mxfp4 = fmt == 'mxfp4'
+            for seq_len in (2048, 8192):
+                for seq_len_kv in (8192, 65536):
+                    for num_heads in (8, 32):
+                        for head_dim in ((64, ) if is_mxfp4 else (64, 128)):
+                            yield (fmt, torch.bfloat16, torch.bfloat16, True, False,
+                                   seq_len, seq_len_kv, num_heads, head_dim, False)
+
     print('Testing FP8/MXFP4/MXFP8 MQA Logits:')
-    for fmt, logits_dtype, weights_dtype, compressed_logits, clean_logits, seq_len, seq_len_kv, num_heads, head_dim, disable_cp in sample_mqa_cases('prefill', list(enumerate_mqa_logits())):
+    mqa_cases = list(enumerate_mqa_logits())
+    if get_arch_major() == 11:
+        mqa_cases += list(enumerate_mqa_logits_sm110())
+    for fmt, logits_dtype, weights_dtype, compressed_logits, clean_logits, seq_len, seq_len_kv, num_heads, head_dim, disable_cp in sample_mqa_cases('prefill', mqa_cases):
         is_mxfp4 = fmt == 'mxfp4'
         is_mxfp8 = fmt == 'mxfp8'
         # Generate random inputs
@@ -351,6 +385,9 @@ def test_paged_mqa_logits():
 
     def enumerate_paged_mqa_logits():
         arch_major = get_arch_major()
+        arch_major = get_arch_major()
+        # SM110 runs the SM100 kernel family but is a separate dispatch target, so it
+        # enumerates the same variants instead of being folded into the `== 10` sets.
         max_kv_pool_tokens = 32 * 1024 * 1024
         max_varlen_tokens = 16 * 1024
         for is_varlen in ((False, True) if arch_major == 10 else (False, )):
@@ -570,7 +607,7 @@ def make_sparse_kv_block_indices(context_lens: List[int], request_indices: List[
     return torch.tensor(indices, device='cuda', dtype=torch.int32), num_blocks_per_q
 
 
-@test_filter(lambda: get_arch_major() == 10)
+@test_filter(lambda: get_arch_major() in (10, 11))
 def test_sparse_mqa_logits() -> None:
     num_heads, head_dim = 32, 128
     page_kv = 64

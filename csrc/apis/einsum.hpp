@@ -5,6 +5,7 @@
 
 
 #include "../utils/exception.hpp"
+#include "../utils/arch_traits.hpp"
 #include "../utils/layout.hpp"
 #include "../utils/compatibility.hpp"
 #include "gemm.hpp"
@@ -53,7 +54,7 @@ static void bmk_bnk_mn(const torch::Tensor& a, const torch::Tensor& b, const tor
         sm90_bmn_bnk_mn_gemm(a, b, d, s, m, n, k);
     } else if (arch_major == 12) {
         sm120_bmn_bnk_mn_gemm(a, b, d, s, m, n, k);
-    } else if (arch_major == 10 or arch_major == 11) {
+    } else if (arch::uses_sm100_tuning(arch_major)) {
         sm100_bmn_bnk_mn_gemm(a, b, d, s, m, n, k);
     } else {
         DG_HOST_UNREACHABLE("Unsupported architecture");
@@ -78,7 +79,7 @@ static void bhr_hdr_bhd(const torch::Tensor& A, const torch::Tensor& B, const to
         sm90_bf16_bhr_hdr_bhd(A, B, D, b, h, r, d);
     } else if (arch_major == 12) {
         sm120_bf16_bhr_hdr_bhd(A, B, D, b, h, r, d);
-    } else if (arch_major == 10 or arch_major == 11) {
+    } else if (arch::uses_sm100_tuning(arch_major)) {
         sm100_bf16_bhr_hdr_bhd(A, B, D, b, h, r, d);
     } else {
         DG_HOST_UNREACHABLE("Unsupported architecture");
@@ -103,7 +104,7 @@ static void bhd_hdr_bhr(const torch::Tensor& A, const torch::Tensor& B, const to
         sm90_bf16_bhd_hdr_bhr(A, B, D, b, h, r, d);
     } else if (arch_major == 12) {
         sm120_bf16_bhd_hdr_bhr(A, B, D, b, h, r, d);
-    } else if (arch_major == 10 or arch_major == 11) {
+    } else if (arch::uses_sm100_tuning(arch_major)) {
         sm100_bf16_bhd_hdr_bhr(A, B, D, b, h, r, d);
     } else {
         DG_HOST_UNREACHABLE("Unsupported architecture");
@@ -195,7 +196,7 @@ static void fp8_bmm(const torch::Tensor& a, const torch::Tensor& sfa,
         //  - `d.stride(0) == n`: the batches are contiguous along the columns of the view
         //  - `n % 128 == 0`: each batch is quantized independently, so neither an SF group
         //    nor a packed 4-SF word may cross a batch boundary
-        DG_HOST_ASSERT((jit->device.get_arch_major() == 10 or jit->device.get_arch_major() == 11) and not c.has_value());
+        DG_HOST_ASSERT(arch::uses_sm100_tuning(jit->device.get_arch_major()) and not c.has_value());
         DG_HOST_ASSERT(d_tensor.scalar_type() == torch::kFloat8_e4m3fn);
         DG_HOST_ASSERT(d_tensor.stride(0) == n and n % 128 == 0);
         check_sf_layout(sfd.value(), m, batch_size * n, 1, 32, std::nullopt, true, false, torch::kInt);
@@ -249,7 +250,7 @@ static void fp8_bmm(const torch::Tensor& a, const torch::Tensor& sfa,
     // Dispatch implementation
     if (arch_major == 12) {
         sm120_fp8_fp4_bmm(a, transformed_sfa, b, transformed_sfb, c, d_tensor, batch_size, m, n, k, gran_k_a, gran_k_b, major_a, major_b, compiled_dims);
-    } else if (arch_major == 10 or arch_major == 11) {
+    } else if (arch::uses_sm100_tuning(arch_major)) {
         sm100_fp8_bmm(a, transformed_sfa, b, transformed_sfb, c, d_tensor, batch_size, m, n, k, gran_k_a, gran_k_b, major_a, major_b, compiled_dims, sfd);
     } else {
         const auto major_sfb = get_major_type_ab(sfb);

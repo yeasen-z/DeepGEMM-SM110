@@ -4,6 +4,7 @@
 #include <c10/cuda/CUDAGraphsC10Utils.h>
 
 #include "../utils/compatibility.hpp"
+#include "../utils/arch_traits.hpp"
 
 #include "../jit_kernels/impls/sm100_mega_mhc.hpp"
 #include "../utils/layout.hpp"
@@ -220,7 +221,11 @@ static void mega_mhc(const torch::Tensor& x,
         DG_HOST_ASSERT(num_required_bytes <= y_shared_sf->storage().nbytes());
     }
 
-    DG_HOST_ASSERT((jit->device.get_arch_major() == 10 or jit->device.get_arch_major() == 11));
+    const auto arch_major = jit->device.get_arch_major();
+    // Same SM100 kernel family, but Mega-MHC has no passing Thor test. Keep the
+    // entry point closed there until one exists, matching Mega-Gate.
+    DG_HOST_ASSERT(arch::uses_sm100_tuning(arch_major));
+    DG_HOST_ASSERT(arch::verified_feature("bf16_mega_mhc", arch_major));
     const auto num_sms = runtime->get_num_sms();
     const auto num_m_blocks = mhc_layout::Workspace<>::get_num_m_blocks(static_cast<uint32_t>(num_tokens));
     const auto num_splits = get_num_splits(num_m_blocks, static_cast<uint32_t>(hidden), static_cast<uint32_t>(num_sms));

@@ -222,7 +222,7 @@ def bench_baseline_gate(inputs: dict[str, Any]) -> float:
     return sum(bench_kineto(run_baseline, BASELINE_KERNELS, suppress_kineto_output=True))
 
 
-@test_filter(lambda: get_arch_major() == 10)
+@test_filter(lambda: get_arch_major() in (10, 11))
 @torch.no_grad()
 def test_mega_gate() -> None:
     torch.manual_seed(0)
@@ -280,7 +280,7 @@ def check_routing_controls() -> None:
     assert torch.all(unmapped_topk_idx[active_force_random] == -1).item()
 
 
-@test_filter(lambda: get_arch_major() == 10)
+@test_filter(lambda: get_arch_major() in (10, 11))
 @torch.no_grad()
 def test_mega_gate_api_contract() -> None:
     torch.manual_seed(2)
@@ -295,6 +295,14 @@ def test_mega_gate_api_contract() -> None:
 
     check_case(16, 4096, 128, 'identity', with_bias=False, with_physical_map=False)
     check_case(129, 4352, 260, 'sigmoid', with_image_bias=True, with_mask=True, with_unmapped_topk_idx=True)
+
+    # Masked rows may hold non-finite values (e.g. CUDA graph padding)
+    for num_tokens, num_routed_experts in ((16, 256), (129, 384), (1024, 384)):
+        inputs = make_inputs(num_tokens, 4096, num_routed_experts, with_image_bias=True, with_mask=True)
+        masked_idx = (~inputs['mask']).nonzero().flatten()
+        inputs['x'][masked_idx[0::2]] = float('nan')
+        inputs['x'][masked_idx[1::2]] = float('inf')
+        check_correctness(inputs, make_outputs(inputs, with_unmapped_topk_idx=True))
 
     inputs = make_inputs(128, 4096, 384, with_image_bias=True)
     inputs['bias'].fill_(1e8)

@@ -4,6 +4,7 @@
 
 #include "../../runtime/jit.hpp"
 #include "../../utils/exception.hpp"
+#include "../../utils/arch_traits.hpp"
 
 namespace deep_gemm {
 
@@ -63,7 +64,7 @@ public:
         if (arch_major == 12)
             return {128, 32, 32};
         // SM100: 224 down to 32 by 32 (sgl tuning)
-        if (arch_major == 10 or arch_major == 11)
+        if (arch::uses_sm100_tuning(arch_major))
             return {224, 32, 32};
         // SM90 and others: fixed legacy alignment, no shrinking
         return {kLegacyMKAlignmentForContiguousLayout, kLegacyMKAlignmentForContiguousLayout, 1};

@@ -59,6 +59,33 @@ def supported_arch_majors():
     return tuple(_C.supported_arch_majors())
 
 
+_FEATURE_SUPPORT = ('unsupported', 'validated', 'unvalidated')
+
+
+def arch_feature_status():
+    """`{name: {'sm100': state, 'sm110': state}}` for every gated feature.
+
+    SM110 is answered for its real arch major (11); nothing is mapped onto 10.
+    """
+    return {
+        name: {'sm100': _FEATURE_SUPPORT[sm100], 'sm110': _FEATURE_SUPPORT[sm110]}
+        for name, sm100, sm110 in _C.arch_feature_status()
+    }
+
+
+def supports_feature(arch, feature: str) -> bool:
+    """Whether `feature` is enabled and validated for `arch` (an int or e.g. 'sm110')."""
+    major = _arch_major(arch)
+    status = arch_feature_status().get(feature)
+    if status is None:
+        return False
+    if major == 10:
+        return status['sm100'] == 'validated'
+    if major == 11:
+        return status['sm110'] == 'validated'
+    return False
+
+
 def _arch_major(arch) -> int:
     """Normalise an architecture to its major number.
 

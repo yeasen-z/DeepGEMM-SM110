@@ -25,6 +25,7 @@
 #include "apis/mega_mhc.hpp"
 #include "apis/sm90_mega.hpp"
 #include "utils/arch.hpp"
+#include "utils/arch_traits.hpp"
 
 using namespace deep_gemm;
 using torch::Tensor;
@@ -88,6 +89,18 @@ void dg_set_block_size_multiple_of(int64_t m, int64_t n) {
 // than a device query. See csrc/utils/arch.hpp.
 std::vector<int64_t> dg_supported_arch_majors() {
     return {arch::kSupportedArchMajors.begin(), arch::kSupportedArchMajors.end()};
+}
+
+// Per-feature SM110 policy, also answered without a device query. Returns a
+// dict-like list of (name, sm100_support, sm110_support) so Python code can
+// explain *why* a path is or is not taken on Thor. See csrc/utils/arch_traits.hpp.
+std::vector<std::tuple<std::string, int64_t, int64_t>> dg_arch_feature_status() {
+    std::vector<std::tuple<std::string, int64_t, int64_t>> result;
+    for (const auto& feature : arch::kFeatureStates)
+        result.emplace_back(feature.name,
+                            static_cast<int64_t>(feature.state.sm100),
+                            static_cast<int64_t>(feature.state.sm110));
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +688,8 @@ TORCH_LIBRARY(deep_gemm, m) {
     m.def("init(str library_root_path, str cuda_home) -> ()", &dg_init);
     // Answerable without a CUDA context: which arch majors this binary accepts.
     m.def("supported_arch_majors() -> int[]", &dg_supported_arch_majors);
+    // Same durability, finer grain: per-feature SM100 / SM110 support state.
+    m.def("arch_feature_status() -> ((str, int, int)[])", &dg_arch_feature_status);
     m.def("get_num_sms() -> int", &dg_get_num_sms);
     m.def("set_num_sms(int new_num_sms) -> ()", &dg_set_num_sms);
     m.def("get_tc_util() -> int", &dg_get_tc_util);
