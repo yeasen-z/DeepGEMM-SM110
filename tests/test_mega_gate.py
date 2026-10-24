@@ -222,7 +222,10 @@ def bench_baseline_gate(inputs: dict[str, Any]) -> float:
     return sum(bench_kineto(run_baseline, BASELINE_KERNELS, suppress_kineto_output=True))
 
 
-@test_filter(lambda: get_arch_major() in (10, 11))
+# Gate on the archs where `bf16_mega_gate` is actually validated, not merely
+# dispatched: the kernel refuses major 11 (see csrc/utils/arch_traits.hpp),
+# so admitting Thor here would turn a deliberate refusal into a test failure.
+@test_filter(lambda: get_arch_major() == 10)
 @torch.no_grad()
 def test_mega_gate() -> None:
     torch.manual_seed(0)
@@ -280,7 +283,10 @@ def check_routing_controls() -> None:
     assert torch.all(unmapped_topk_idx[active_force_random] == -1).item()
 
 
-@test_filter(lambda: get_arch_major() in (10, 11))
+# Gate on the archs where `bf16_mega_gate` is actually validated, not merely
+# dispatched: the kernel refuses major 11 (see csrc/utils/arch_traits.hpp),
+# so admitting Thor here would turn a deliberate refusal into a test failure.
+@test_filter(lambda: get_arch_major() == 10)
 @torch.no_grad()
 def test_mega_gate_api_contract() -> None:
     torch.manual_seed(2)

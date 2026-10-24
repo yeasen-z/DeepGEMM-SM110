@@ -154,9 +154,13 @@ export CUDA_HOME=/path/to/cuda
 
 在 Jetson AGX Thor 测试机上：
 
-- BF16、FP8、layout、attention、einsum 和 hyperconnection 测试均无失败；
-- 未加保护条件的 k-grouped FP4：189/189 通过；
-- 未加保护条件的 psum layout：224/224 通过；
+- 在 `v0.2.3.post2` 基线上：`test_bf16`（391）、`test_einsum`（60）、`test_layout`（216）、
+  `test_hyperconnection`（24）与 `test_arch_traits` 全部通过，零失败，共 691 例；
+  `test_fp8_fp4` 通过 232 例后在中途被停止，因此不计为完整跑完；
+- MQA 的 prefill 与 paged decode（`test_attention.py`）在同一 wheel 上通过；
+- Mega Gate 与 Mega mHC 在 SM110 上按设计被拒绝，测试中已过滤跳过；
+- 以下两项记录于更早的 `v0.2.3` 基线，**未**在 post2 上重跑：未加保护条件的
+  k-grouped FP4（189/189）、未加保护条件的 psum layout（224/224）；
 - SGLang + Qwen3-8B-FP8 可以生成正确文本；
 - 相同 workload 的 steady-state prefill：DeepGEMM 5,331 tok/s，Triton 3,639 tok/s，提升 1.47x。
 

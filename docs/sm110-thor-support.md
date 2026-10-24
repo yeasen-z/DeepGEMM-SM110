@@ -9,13 +9,16 @@ and test it, and what the recorded verification results were.
 - Status: the dispatch path works and has been exercised **end to end** — SGLang
   serving `Qwen3-8B-FP8` on Thor with the DeepGEMM FP8 backend produces correct
   generation, and a steady-state prefill measurement puts DeepGEMM **1.47x** faster
-  than the Triton backend. The full suite **has** now been run to completion:
-  `test_bf16.py`, `test_fp8_fp4.py` and `test_layout.py` finished with exit 0,
-  **1074 cases, zero assertion failures, zero tracebacks** (per-section numbers in
-  [§5.1](#51-numerical-correctness)). Two further sections are skipped by the suite
-  itself but were run unguarded and pass — FP4 k-grouped (189 cases) and the
-  k-grouped psum SF layout (224 cases); see §5.1.1. SGLang integration has one
-  extra prerequisite (see [§6](#6-sglang-integration-prerequisite)).
+  than the Triton backend.
+
+  On the `v0.2.3.post2` base, the suites that completed ran **923 cases with zero
+  assertion failures and zero tracebacks** (per-section numbers in
+  [§5.1](#51-numerical-correctness)). `test_fp8_fp4.py` was stopped part-way
+  through its k-grouped section after 232 passing cases and is **not** counted as
+  a completed run. The end-to-end measurement and the two unguarded sections
+  below were recorded on the earlier `v0.2.3` base and have **not** been repeated
+  on post2. SGLang integration has one extra prerequisite (see
+  [§6](#6-sglang-integration-prerequisite)).
 
 ---
 
@@ -380,48 +383,60 @@ Exits non-zero on a real problem. It deliberately does **not** print a hash of
 
 ### 5.1 Numerical correctness
 
-**All three suites ran to completion.** Every file exited 0, and every case
-passed its assertion — **zero assertion failures, zero tracebacks**:
+Measured on the `v0.2.3.post2` base with the installed
+`0.2.3.post2+sm110` wheel. Every suite that completed exited 0 with **zero
+assertion failures and zero tracebacks**:
 
 | Suite | Cases | Sections | Exit |
 |---|---:|---:|---:|
-| `test_bf16.py` | 449 | 7 | 0 |
-| `test_fp8_fp4.py` | 353 | 4 | 0 |
-| `test_layout.py` | 272 | 2 ran, 1 skipped | 0 |
-| **Total** | **1074** | | |
+| `test_arch_traits.py` | — | 1 | 0 |
+| `test_bf16.py` | 391 | 7 | 0 |
+| `test_fp8_fp4.py` | 232 | 4 | — (interrupted) |
+| `test_einsum.py` | 60 | 7 | 0 |
+| `test_layout.py` | 216 | 1 | 0 |
+| `test_hyperconnection.py` | 24 | 1 | 0 |
+| `test_mega_gate.py` | 0 (filtered) | 2 | 0 |
+| `test_mega_mhc.py` | 0 (filtered) | 2 | 0 |
+| **Total (completed suites)** | **923** | | **0** |
 
-Section sizes below are the exact generator yields on major 11, counted by
-running the generators themselves — they are *not* copied from SM100
-expectations, because several generators emit fewer cases on this arch
-(`use_alpha_options` is `(False,)` unless the major is 10, and FP4 variants are
-added only for major 10).
+Per-section detail, counted from the `Perf` line each case prints after its
+assertion has already passed:
 
-| Suite / section | Cases run | Cases in section | Assertion failures |
-|---|---:|---:|---:|
-| `test_bf16.py` → `Testing GEMM` (dense) | 84 | 84 | 0 |
-| `test_bf16.py` → m-grouped contiguous | 48 | 48 | 0 |
-| `test_bf16.py` → m-grouped masked | 32 | 32 | 0 |
-| `test_bf16.py` → k-grouped contiguous | 105 | 105 | 0 |
-| `test_bf16.py` → cuBLASLt GEMM | 84 | 84 | 0 |
-| `test_bf16.py` → cuBLASLt batched SYRK | 32 | 32 | 0 |
-| `test_bf16.py` → cuBLASLt batched SYMM | 64 | 64 | 0 |
-| `test_fp8_fp4.py` → `Testing GEMM` (FP8 only on SM110) | 42 | 42 | 0 |
-| `test_fp8_fp4.py` → m-grouped contiguous | 48 | 48 | 0 |
-| `test_fp8_fp4.py` → m-grouped masked | 32 | 32 | 0 |
-| `test_fp8_fp4.py` → k-grouped GEMM (FP8 only) | 231 | 231 | 0 |
-| `test_layout.py` → `Testing SF layout kernels` | 216 | 216 | 0 |
-| `test_layout.py` → k-grouped SF layout | 56 | 56 | 0 |
-| `test_layout.py` → k-grouped psum SF layout | 0 (skipped) | 0 | — |
-| `test_fp8_fp4.py` → FP4 k-grouped GEMM | 0 (skipped) | 0 | — |
-| **Total** | **1074** | | **0** |
-
-Two further sections are skipped by the suite but were run unguarded; they are
-*not* part of the 1074 above (see §5.1.1):
-
-| Unguarded check | Cases | Failures |
+| Suite / section | Cases run | Assertion failures |
 |---|---:|---:|
-| k-grouped psum SF layout | 224 | 0 |
-| FP4 k-grouped GEMM | 189 | 0 |
+| `test_bf16.py` → `Testing GEMM` (dense) | 84 | 0 |
+| `test_bf16.py` → m-grouped contiguous | 32 | 0 |
+| `test_bf16.py` → m-grouped masked | 32 | 0 |
+| `test_bf16.py` → k-grouped contiguous | 63 | 0 |
+| `test_bf16.py` → cuBLASLt GEMM | 84 | 0 |
+| `test_bf16.py` → cuBLASLt batched SYRK | 32 | 0 |
+| `test_bf16.py` → cuBLASLt batched SYMM | 64 | 0 |
+| `test_fp8_fp4.py` → `Testing GEMM` (FP8 only on SM110) | 42 | 0 |
+| `test_fp8_fp4.py` → m-grouped contiguous | 32 | 0 |
+| `test_fp8_fp4.py` → m-grouped masked | 32 | 0 |
+| `test_fp8_fp4.py` → k-grouped GEMM (FP8 only) | 126 (of 231) | 0 |
+| `test_einsum.py` → BF16 contractions | 48 | 0 |
+| `test_einsum.py` → FP8 contractions | 12 | 0 |
+| `test_layout.py` → `Testing SF layout kernels` | 216 | 0 |
+| `test_hyperconnection.py` → prenorm GEMM | 24 | 0 |
+| **Total** | **923** | **0** |
+
+`test_fp8_fp4.py` is marked *interrupted* rather than 0: the process was
+stopped part-way through the 231-case k-grouped section, after 126 of those
+cases had passed. The 232 cases it did run produced no failure, but the suite
+as a whole did not reach its end, so it is not claimed as a completed run.
+
+`test_mega_gate.py` and `test_mega_mhc.py` are filtered out on major 11 rather
+than passing kernels: both features are recorded `Unvalidated` for SM110 in
+`csrc/utils/arch_traits.hpp`, and the host layer refuses them with a
+`verified_feature` assertion. The `test_mega_gate.py` filter previously admitted
+major 11, which turned that deliberate refusal into a test failure; it now
+matches the policy table (major 10 only). This is a test-selection fix, not a
+kernel fix — the gate itself is still refused on Thor by design.
+
+The MQA path was exercised separately on the same wheel, running the prefill
+and paged-decode sections of `test_attention.py` (4 cases each, MXFP8/MXFP4 and
+FP8, both FP32 and BF16 logits) to completion with zero assertion failures.
 
 The `Perf` counts for the sections that *do* print one line per case are the
 totals above; some sections print inside an inner loop, so the mapping from
@@ -449,6 +464,11 @@ the exact tensors the kernel consumed, and the pre-requant comparison differs by
 two orders of magnitude (0.41 vs 0.0017).
 
 ### 5.1.1 Paths reachable on SM110 that the suite skips, checked unguarded
+
+> **Base note.** The two checks in this section were recorded on the earlier
+> `v0.2.3` base. They have **not** been repeated on `v0.2.3.post2`, so treat them
+> as evidence that these code paths work on SM110 hardware, not as a measurement
+> of the post2 tree.
 
 Two sections became reachable on Thor because of the patch while the upstream
 test files decline to run them. In both cases the skip lives in the *test body*,

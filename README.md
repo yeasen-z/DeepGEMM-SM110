@@ -154,9 +154,14 @@ The selected CUDA installation must provide `bin/nvcc` and the device headers ne
 
 On the Jetson AGX Thor test machine:
 
-- BF16, FP8, layout, attention, einsum, and hyperconnection tests completed without failures.
-- Unguarded k-grouped FP4: 189/189 passed.
-- Unguarded psum layout: 224/224 passed.
+- On the `v0.2.3.post2` base: `test_bf16` (391), `test_einsum` (60), `test_layout` (216),
+  `test_hyperconnection` (24) and `test_arch_traits` completed with zero failures — 691 cases.
+  `test_fp8_fp4` passed 232 cases before being stopped part-way through its k-grouped
+  section, so it is not claimed as a completed run.
+- MQA prefill and paged decode (`test_attention.py`) also pass on the same wheel.
+- Mega Gate and Mega mHC are refused on SM110 by design and filtered out of the suite.
+- Recorded earlier on the `v0.2.3` base and **not** repeated on post2: unguarded
+  k-grouped FP4 (189/189) and unguarded psum layout (224/224).
 - SGLang with Qwen3-8B-FP8 produced correct text.
 - Steady-state prefill throughput: 5,331 tok/s with DeepGEMM vs 3,639 tok/s with Triton on the same workload (1.47x).
 
