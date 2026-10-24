@@ -2,17 +2,17 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-SM110 support for DeepGEMM v0.2.3, for use with SGLang on the NVIDIA Jetson AGX Thor.
+SM110 support for DeepGEMM v0.2.3.post2, for use with SGLang on the NVIDIA Jetson AGX Thor.
 
 - Device: NVIDIA Jetson AGX Thor, `sm_110` / compute capability 11.0
-- Distribution: `sgl-deep-gemm==0.2.3+sm110`
+- Distribution: `sgl-deep-gemm==0.2.3.post2+sm110`
 - Python import: `deep_gemm`
 - Detailed verification record: [docs/sm110-thor-support.md](docs/sm110-thor-support.md)
 - Original upstream README: [README.upstream.md](README.upstream.md)
 
 ## What changed
 
-Upstream DeepGEMM v0.2.3 did not recognize architecture major 11. Thor therefore stopped with `Unsupported architecture` before selecting a kernel.
+Upstream DeepGEMM v0.2.3.post2 did not recognize architecture major 11. Thor therefore stopped with `Unsupported architecture` before selecting a kernel.
 
 This fork:
 
@@ -94,7 +94,7 @@ print('GEMM   : OK')
 Expected on Thor:
 
 ```text
-version: 0.2.3+sm110
+version: 0.2.3.post2+sm110
 device : (11, 0)
 SM110  : True
 GEMM   : OK
@@ -106,7 +106,7 @@ For a broader diagnostic:
 python -m deep_gemm.doctor
 ```
 
-The installed version `0.2.3+sm110` satisfies SGLang's `sgl-deep-gemm==0.2.3` dependency.
+The installed version `0.2.3.post2+sm110` satisfies SGLang's `sgl-deep-gemm==0.2.3.post2` pin: PEP 440 ignores the local segment, so the `+sm110` build is accepted while never being confused with the upstream release.
 
 ## Configure SGLang
 
@@ -166,4 +166,4 @@ See [docs/sm110-thor-support.md](docs/sm110-thor-support.md) for the full test d
 
 ## Upstream
 
-This fork is based on [sgl-project/DeepGEMM](https://github.com/sgl-project/DeepGEMM) v0.2.3. The original README is preserved in [README.upstream.md](README.upstream.md).
+This fork is based on [sgl-project/DeepGEMM](https://github.com/sgl-project/DeepGEMM) v0.2.3.post2 — the revision SGLang pins as `sgl-deep-gemm==0.2.3.post2`, so every entry point SGLang calls keeps its post2 signature. The original README is preserved in [README.upstream.md](README.upstream.md).

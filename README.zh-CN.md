@@ -2,17 +2,17 @@
 
 [English](README.md) | **简体中文**
 
-本项目把 DeepGEMM v0.2.3 适配到 NVIDIA Jetson AGX Thor（SM110），供 SGLang 使用。
+本项目把 DeepGEMM v0.2.3.post2 适配到 NVIDIA Jetson AGX Thor（SM110），供 SGLang 使用。
 
 - 设备：NVIDIA Jetson AGX Thor，`sm_110` / compute capability 11.0
-- 发行包：`sgl-deep-gemm==0.2.3+sm110`
+- 发行包：`sgl-deep-gemm==0.2.3.post2+sm110`
 - Python 导入名：`deep_gemm`
 - 详细验证记录：[docs/sm110-thor-support.md](docs/sm110-thor-support.md)
 - 上游原始 README：[README.upstream.md](README.upstream.md)
 
 ## 改了什么
 
-上游 DeepGEMM v0.2.3 不识别架构主版本 11，所以 Thor 会在选 kernel 之前报 `Unsupported architecture`。
+上游 DeepGEMM v0.2.3.post2 不识别架构主版本 11，所以 Thor 会在选 kernel 之前报 `Unsupported architecture`。
 
 这个 fork 做了以下修改：
 
@@ -94,7 +94,7 @@ print('GEMM   : OK')
 Thor 上预期输出：
 
 ```text
-version: 0.2.3+sm110
+version: 0.2.3.post2+sm110
 device : (11, 0)
 SM110  : True
 GEMM   : OK
@@ -106,7 +106,7 @@ GEMM   : OK
 python -m deep_gemm.doctor
 ```
 
-安装的版本 `0.2.3+sm110` 满足 SGLang 的 `sgl-deep-gemm==0.2.3` 依赖。
+安装的版本 `0.2.3.post2+sm110` 满足 SGLang 的 `sgl-deep-gemm==0.2.3.post2` 约束：PEP 440 的 `==` 忽略本地版本段，所以带 `+sm110` 的构建能被接受，同时不会和上游正式发布混淆。
 
 ## 配置 SGLang
 
@@ -166,4 +166,4 @@ export CUDA_HOME=/path/to/cuda
 
 ## 上游项目
 
-本 fork 基于 [sgl-project/DeepGEMM](https://github.com/sgl-project/DeepGEMM) v0.2.3。上游原始 README 保存在 [README.upstream.md](README.upstream.md)。
+本 fork 基于 [sgl-project/DeepGEMM](https://github.com/sgl-project/DeepGEMM) v0.2.3.post2——也就是 SGLang 所钉的 `sgl-deep-gemm==0.2.3.post2`，因此 SGLang 调用的每个入口都保持 post2 签名。上游原始 README 保存在 [README.upstream.md](README.upstream.md)。

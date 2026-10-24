@@ -4,7 +4,7 @@ This document describes the experimental SM110 enablement carried by this fork,
 how the SM100 kernel family is reused, exactly which files changed, how to build
 and test it, and what the recorded verification results were.
 
-- Base: `sgl-project/DeepGEMM` **v0.2.3** (`e6f9bd6`)
+- Base: `sgl-project/DeepGEMM` **v0.2.3.post2** (`b7f3816`)
 - Target: **NVIDIA Jetson AGX Thor Developer Kit**, `sm_110` / compute capability **11.0**
 - Status: the dispatch path works and has been exercised **end to end** — SGLang
   serving `Qwen3-8B-FP8` on Thor with the DeepGEMM FP8 backend produces correct
@@ -30,7 +30,7 @@ runtime through DeepJIT:
 const auto major = runtime->device.get_arch_major();
 ```
 
-Upstream v0.2.3 only ever compares against `9`, `10`, and `12`. Thor reports
+Upstream v0.2.3.post2 only ever compares against `9`, `10`, and `12`. Thor reports
 **major 11**, so every public API fell into the catch-all branch and aborted
 before any kernel was selected:
 
@@ -111,8 +111,8 @@ installed.
 
 The complete change is a single commit,
 [`db919b4`](https://github.com/yeasen-z/DeepGEMM-thor-sm110/commit/db919b4); to see it
-against upstream v0.2.3, use the
-[`e6f9bd6...main` comparison](https://github.com/yeasen-z/DeepGEMM-thor-sm110/compare/e6f9bd6...main).
+against upstream v0.2.3.post2, use the
+[`b7f3816...main` comparison](https://github.com/yeasen-z/DeepGEMM-thor-sm110/compare/b7f3816...main).
 `git diff --stat` of the host layer is the entire content of this section:
 
 ```
@@ -174,7 +174,7 @@ is still `deep_gemm`.
 | Host compiler | GCC/G++ 13.3.0 |
 | PyTorch | `2.14.1+cu130` |
 | Python env | conda env `inscope`, Python 3.12 |
-| DeepGEMM base | `v0.2.3` (`e6f9bd6`) |
+| DeepGEMM base | `v0.2.3.post2` (`b7f3816`) |
 
 > **No hash of `_C.so` is recorded here, and none should be.** The binary embeds
 > the absolute path of the sources it was compiled from, so the same sources
@@ -216,12 +216,12 @@ against one cannot be imported under the other, which is why:
 Python and torch versions it will build against, and fails early if that
 interpreter cannot import torch.
 
-The wheel version is `0.2.3+sm110` (`sgl_deep_gemm/VERSION`), a PEP 440 local
-version. It sorts above the upstream `0.2.3` and still satisfies SGLang's pin
-`sgl-deep-gemm==0.2.3`, because `==` ignores the local segment. That matters for
+The wheel version is `0.2.3.post2+sm110` (`sgl_deep_gemm/VERSION`), a PEP 440 local
+version. It sorts above the upstream `0.2.3.post2` and still satisfies SGLang's pin
+`sgl-deep-gemm==0.2.3.post2`, because `==` ignores the local segment. That matters for
 installation: pip treats a wheel at the *same* version as the installed one as a
 no-op ("already installed with the same version… Use `--force-reinstall`"), so a
-wheel left at `0.2.3` would silently fail to replace an existing DeepGEMM.
+wheel left at `0.2.3.post2` would silently fail to replace an existing DeepGEMM.
 
 > **Host compile vs. runtime JIT — two separate header lookups.** The runtime
 > JIT emits `#include <deep_gemm/impls/...>` and compiles it with
@@ -306,7 +306,7 @@ by removing the guard and keeping the assertions. See §5.1.1.
 The supported installation is `sgl-deep-gemm`, built by
 `bash build_sgl_deep_gemm.sh`; the Python import name is `deep_gemm`.
 Install the resulting wheel using the source-build instructions in README §2.
-Version `0.2.3+sm110` satisfies SGLang's `sgl-deep-gemm==0.2.3` dependency.
+Version `0.2.3.post2+sm110` satisfies SGLang's `sgl-deep-gemm==0.2.3.post2` pin.
 
 Do not use root-level `pip install .` for SGLang. Its legacy `setup.py`
 declares a different distribution, `deep_gemm`. Both distributions own files
@@ -737,7 +737,7 @@ SGLang edits, with `SGLANG_ENABLE_JIT_DEEPGEMM=1`.
 
 ## 8. Version handling
 
-`sgl_deep_gemm/VERSION` (`0.2.3+sm110`) is the single source of truth for the
+`sgl_deep_gemm/VERSION` (`0.2.3.post2+sm110`) is the single source of truth for the
 version this repository reports:
 
 - `build_sgl_deep_gemm.sh` stages it into the wheel's `deep_gemm/VERSION`; the
@@ -757,7 +757,7 @@ it as "the original DeepGEMM version" would be wrong.
 
 One formatting detail matters: PEP 440 permits only one local segment, and
 upstream's `setup.py` appended `+<commit>` / `+local` on top of the version, which
-on `0.2.3+sm110` would yield the invalid `0.2.3+sm110+local`. `setup.py` now
+on `0.2.3.post2+sm110` would yield the invalid `0.2.3.post2+sm110+local`. `setup.py` now
 returns the file's value verbatim and warns about a dirty tree instead of
 encoding it.
 
@@ -765,5 +765,5 @@ This unification does **not** make `pip install .` a supported installation
 route — it still compiles upstream's obsolete entry point and is broken for
 reasons unrelated to the version (§4.1).
 
-Verified: `build_sgl_deep_gemm.sh` stamps `0.2.3+sm110`, the installed package
-reports `0.2.3+sm110`, and `importlib.metadata.version('sgl-deep-gemm')` agrees.
+Verified: `build_sgl_deep_gemm.sh` stamps `0.2.3.post2+sm110`, the installed package
+reports `0.2.3.post2+sm110`, and `importlib.metadata.version('sgl-deep-gemm')` agrees.
