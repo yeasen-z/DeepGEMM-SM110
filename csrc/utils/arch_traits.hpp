@@ -66,10 +66,14 @@ inline constexpr struct {
     {"bf16_mega_gate", {FeatureSupport::Validated, FeatureSupport::Unvalidated}},
     // Upstream's 384-token / three-warpgroup BF16 MQA split.
     // NOTE(Thor): validated on SM110 -- the MXFP8/MXFP4 + BF16-weights + BF16-logits
-    // path runs correctly (rel. err ~9.8e-2, expected for BF16 weights) and is
-    // 1.5x-2.9x faster than the 256-token path. Keeping it off is not a safe
-    // fallback: `bf16_mqa_kernel` asserts block_kv == 384, so disabling the split
-    // turns every such request into a hard failure instead of a slower kernel.
+    // path runs correctly and is 1.5x-2.9x faster than the 256-token path.
+    // Measured error against a same-precision reference is ~8.4e-2 for the 384
+    // kernel vs ~3.1e-2 for 256 on identical inputs; the delta comes from the
+    // 384 kernel accumulating in BF16 (`__hfma2` / `__hadd2_rn`), not from the
+    // weight dtype (quantizing weights to BF16 alone costs ~1.2e-2).
+    // Keeping it off is not a safe fallback either: `bf16_mqa_kernel` asserts
+    // block_kv == 384, so disabling the split turns every such request into a
+    // hard failure instead of a slower kernel.
     {"bf16_mqa_wide_split", {FeatureSupport::Validated, FeatureSupport::Validated}},
     // Contiguous-K layout BLOCK_M search tuned for SM100.
     {"contiguous_mk_alignment_sm100", {FeatureSupport::Validated, FeatureSupport::Unvalidated}},

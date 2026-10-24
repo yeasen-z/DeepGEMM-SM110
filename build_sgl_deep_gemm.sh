@@ -141,6 +141,9 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$PKG_DIR"
 
 cp sgl_deep_gemm/LICENSE sgl_deep_gemm/README.md sgl_deep_gemm/pyproject.toml "$BUILD_DIR/"
+# `setup.py` declares the prebuilt `_C.so` as an extension so setuptools stamps
+# the wheel with the real platform instead of `py3-none-any`.
+cp sgl_deep_gemm/setup.py "$BUILD_DIR/"
 cp sgl_deep_gemm/__init__.py sgl_deep_gemm/cuda_helpers.py sgl_deep_gemm/build_ext.py \
    sgl_deep_gemm/doctor.py "$PKG_DIR/"
 
